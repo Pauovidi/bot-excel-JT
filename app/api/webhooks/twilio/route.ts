@@ -6,7 +6,7 @@ import { buildPublicUrl, isDemoStateless, requireEnv, resolveAppBaseUrl } from "
 import { toComparablePhone } from "@/lib/phone";
 import { readState, updateState } from "@/lib/stateStore";
 import { processIntentWithCalendar } from "@/services/calendarService";
-import { progressGuidedFlow } from "@/services/conversationFlowService";
+import { hydrateOpenGuidedFlowRecord, progressGuidedFlow } from "@/services/conversationFlowService";
 import { classifyIntent } from "@/services/intentService";
 import { logActivity } from "@/services/loggerService";
 import { readAllRowsFromSpreadsheet, updateRecordInSpreadsheet } from "@/services/sheetsService";
@@ -35,6 +35,24 @@ function upsertStateRecord(records: DemoRecord[], record: DemoRecord) {
   }
 
   records.push(record);
+}
+
+function summarizeSheetState(record?: DemoRecord | null) {
+  if (!record) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    estadoWhatsapp: record.estadoWhatsapp,
+    conversationClosed: record.conversationClosed,
+    flowType: record.flowType,
+    conversationState: record.conversationState,
+    tipoAccion: record.tipoAccion,
+    fechaAccion: record.fechaAccion,
+    horaCita: record.horaCita,
+    lastProcessedHash: record.lastProcessedHash
+  };
 }
 
 function validateTwilioRequest(request: Request, params: Record<string, string>) {
@@ -112,6 +130,11 @@ export async function POST(request: Request) {
     }
 
     const validation = validateTwilioRequest(request, params);
+    console.info("[twilio-webhook] signature valid", {
+      correlationId,
+      valid: validation.valid,
+      matchedUrl: validation.matchedUrl
+    });
     if (!validation.valid) {
       await logActivity({
         correlationId,
@@ -125,10 +148,22 @@ export async function POST(request: Request) {
     }
 
     const phone = toComparablePhone(params.From);
+    console.info("[twilio-webhook] normalized phone", {
+      correlationId,
+      rawPhone,
+      normalizedPhone: phone
+    });
     const state = await readState();
-    const record =
+    const foundRecord =
       state.records.find((item) => toComparablePhone(item.telefono) === phone) ??
       (await readAllRowsFromSpreadsheet()).find((item) => toComparablePhone(item.telefono) === phone);
+    const record = foundRecord ? hydrateOpenGuidedFlowRecord(foundRecord) : null;
+
+    console.info("[twilio-webhook] patient found", {
+      correlationId,
+      found: Boolean(record),
+      sheetStateBefore: summarizeSheetState(record)
+    });
 
     if (!record) {
       await logActivity({
@@ -142,16 +177,28 @@ export async function POST(request: Request) {
       return buildTwimlResponse("No hemos encontrado tu ficha en la demo.");
     }
 
+    console.info("[twilio-webhook] conversation found", {
+      correlationId,
+      open: !record.conversationClosed,
+      flowType: record.flowType,
+      conversationState: record.conversationState
+    });
+
     await logActivity({
       correlationId: record.id.slice(0, 8),
       paciente: record.nombre,
       telefono: record.telefono,
       accion: "webhook_route_ok",
       resultado: record.flowType || "simple_intent",
-        detalle: "Webhook inbound validado y asociado a un paciente."
-      });
+      detalle: "Webhook inbound validado y asociado a un paciente."
+    });
 
     if (record.flowType && !record.conversationClosed) {
+      console.info("[twilio-webhook] flow selected", {
+        correlationId,
+        flowType: record.flowType,
+        conversationState: record.conversationState
+      });
       try {
         const progressed = await progressGuidedFlow(record, inboundMessage);
         if (progressed) {
@@ -168,6 +215,11 @@ export async function POST(request: Request) {
             if (progressed.calendarUpdated || updatedRecord.calendarEventId) {
               current.steps.calendar_updated = "done";
             }
+          });
+
+          console.info("[twilio-webhook] sheet state after", {
+            correlationId,
+            sheetStateAfter: summarizeSheetState(updatedRecord)
           });
 
           try {
@@ -213,6 +265,11 @@ export async function POST(request: Request) {
     }
 
     const intent = classifyIntent(inboundMessage, record.tipoAccion);
+    console.info("[twilio-webhook] intent parsed", {
+      correlationId,
+      intent,
+      flowType: record.flowType || "simple_intent"
+    });
     let updatedRecord: DemoRecord = {
       ...record,
       ultimaRespuesta: inboundMessage,
@@ -258,6 +315,11 @@ export async function POST(request: Request) {
         current.steps.calendar_updated = "error";
       });
 
+      console.info("[twilio-webhook] sheet state after", {
+        correlationId,
+        sheetStateAfter: summarizeSheetState(updatedRecord)
+      });
+
       try {
         await updateRecordInSpreadsheet(updatedRecord);
       } catch (sheetError) {
@@ -288,6 +350,11 @@ export async function POST(request: Request) {
       if (calendarResultStatus === "calendar_creado" || calendarResultStatus === "pendiente_reprogramacion") {
         current.steps.calendar_updated = "done";
       }
+    });
+
+    console.info("[twilio-webhook] sheet state after", {
+      correlationId,
+      sheetStateAfter: summarizeSheetState(updatedRecord)
     });
 
     try {
