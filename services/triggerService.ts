@@ -5,7 +5,11 @@ import { getDemoV2Config, getDemoV2TriggerDate, isDemoV2SingleRowEnabled, isDemo
 import { buildDemoV2ObservationHash, buildDemoV2RelevantHash, buildTriggerHash, buildTriggerReopenHash } from "@/lib/hash";
 import { normalizeActionTypeValue, normalizeHeaderKey } from "@/lib/normalization";
 import { readState, updateState } from "@/lib/stateStore";
-import { hydrateOpenGuidedFlowRecord, prepareGuidedFlowStart } from "@/services/conversationFlowService";
+import {
+  hydrateOpenGuidedFlowRecord,
+  prepareGuidedFlowStart,
+  resolveConversationFlowSelection
+} from "@/services/conversationFlowService";
 import { logActivity } from "@/services/loggerService";
 import {
   buildReconstructedImportSummary,
@@ -120,70 +124,22 @@ function summarizeDemoV2State(record?: DemoRecord | null) {
 }
 
 function getDemoV2FlowDecision(record: DemoRecord) {
-  const normalizedAction = normalizeActionTypeValue(record.tipoAccion, record.tipoAccion);
-  const normalizedSheet = normalizeHeaderKey(record.sheetName || record.tratamientoRealizado);
-
-  if (normalizedAction === "cumpleanos") {
-    return {
-      normalizedAction,
-      decision: "cumpleanos",
-      normalizedRecord: {
-        ...record,
-        tipoAccion: "cumpleanos",
-        fechaAccion: getDemoV2TriggerDate(record),
-        flowType: ""
-      } satisfies DemoRecord
-    };
-  }
-
-  if (normalizedAction === "promo" && normalizedSheet.includes("implant")) {
-    return {
-      normalizedAction,
-      decision: "implantologia_recuperacion",
-      normalizedRecord: {
-        ...record,
-        tipoAccion: "promo",
-        fechaAccion: getDemoV2TriggerDate(record),
-        flowType: ""
-      } satisfies DemoRecord
-    };
-  }
-
-  if (normalizedAction === "revision" && normalizedSheet.includes("ortodon")) {
-    return {
-      normalizedAction,
-      decision: "revision_ortodoncia",
-      normalizedRecord: {
-        ...record,
-        tipoAccion: "revision",
-        fechaAccion: getDemoV2TriggerDate(record),
-        flowType: ""
-      } satisfies DemoRecord
-    };
-  }
-
-  if (normalizedAction === "revision" && normalizedSheet.includes("limpieza")) {
-    return {
-      normalizedAction,
-      decision: "revision_limpieza_generica",
-      normalizedRecord: {
-        ...record,
-        tipoAccion: "revision",
-        fechaAccion: getDemoV2TriggerDate(record),
-        flowType: ""
-      } satisfies DemoRecord
-    };
-  }
+  const normalizedRecord = {
+    ...record,
+    tipoAccion: normalizeActionTypeValue(record.tipoAccion, record.tipoAccion),
+    fechaAccion: getDemoV2TriggerDate(record),
+    flowType: ""
+  } satisfies DemoRecord;
+  const selection = resolveConversationFlowSelection(normalizedRecord);
 
   return {
-    normalizedAction,
-    decision: `generic_${normalizedAction || "revision"}`,
-    normalizedRecord: {
-      ...record,
-      tipoAccion: normalizedAction,
-      fechaAccion: getDemoV2TriggerDate(record),
-      flowType: ""
-    } satisfies DemoRecord
+    normalizedAction: selection.normalizedActionType,
+    normalizedContext: selection.normalizedContext,
+    specialization: selection.specialization,
+    decision: selection.flowType || `generic_${selection.normalizedActionType || "revision"}`,
+    selectedTemplate: selection.selectedTemplate,
+    fallbackUsed: selection.fallbackUsed,
+    normalizedRecord
   };
 }
 
@@ -536,6 +492,22 @@ export async function processDemoV2SheetEdit(input: {
   }
 
   const flowDecision = getDemoV2FlowDecision(liveRecord);
+  console.info("[triggerService] current sheetName", {
+    correlationId,
+    value: liveRecord.sheetName
+  });
+  console.info("[triggerService] current tratamiento_real", {
+    correlationId,
+    value: liveRecord.tratamientoRealizado
+  });
+  console.info("[triggerService] normalized context", {
+    correlationId,
+    value: flowDecision.normalizedContext
+  });
+  console.info("[triggerService] specialization matched", {
+    correlationId,
+    value: flowDecision.specialization
+  });
   console.info("[triggerService] flow selected from tipo_accion + sheet context", {
     correlationId,
     sheetName: liveRecord.sheetName,
@@ -549,6 +521,22 @@ export async function processDemoV2SheetEdit(input: {
   });
   const flowStart = prepareGuidedFlowStart(outboundBase);
   const outboundRecord = flowStart?.record ?? outboundBase;
+  const selectedFlowType = flowStart?.record.flowType ?? "";
+  const selectedTemplate = flowStart?.record.lastBotMessageType || flowDecision.selectedTemplate;
+  const fallbackUsed = !flowStart;
+
+  console.info("[triggerService] selected flowType", {
+    correlationId,
+    value: selectedFlowType
+  });
+  console.info("[triggerService] selected template", {
+    correlationId,
+    value: selectedTemplate
+  });
+  console.info("[triggerService] fallback used", {
+    correlationId,
+    value: fallbackUsed
+  });
 
   if (shouldSkipTrigger(outboundRecord)) {
     await updateState((current) => {
@@ -585,7 +573,10 @@ export async function processDemoV2SheetEdit(input: {
       sheetName: liveRecord.sheetName,
       rowNumber: liveRecord.sheetRowNumber,
       telefono: liveRecord.telefono,
-      flowDecision: flowDecision.decision
+      flowDecision: flowDecision.decision,
+      selectedFlowType,
+      selectedTemplate,
+      fallbackUsed
     });
     const sent = await sendWhatsApp(outboundRecord, {
       body: flowStart?.message,

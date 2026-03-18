@@ -1,7 +1,7 @@
 import { formatDisplayDate, nowIso } from "@/lib/dateUtils";
 import { normalizeActionTypeValue, normalizeFlowTypeValue, normalizeHeaderKey, stripAccents } from "@/lib/normalization";
 import { createConversationCalendarEvent } from "@/services/calendarService";
-import type { ConversationState, DemoRecord, FlowType } from "@/types/demo";
+import type { ActionType, ConversationState, DemoRecord, FlowType } from "@/types/demo";
 
 type FlowLog = {
   accion: string;
@@ -27,6 +27,17 @@ type FlowProgressResult = {
   replyMessage: string;
   logs: FlowLog[];
   calendarUpdated: boolean;
+};
+
+export type FlowSpecialization = "cumpleanos" | "implantologia" | "ortodoncia" | "none";
+
+export type FlowSelection = {
+  normalizedActionType: ActionType;
+  normalizedContext: string;
+  specialization: FlowSpecialization;
+  flowType: FlowType;
+  selectedTemplate: string;
+  fallbackUsed: boolean;
 };
 
 function normalizeMessage(message: string) {
@@ -222,23 +233,61 @@ function withClosedConversation(
   } satisfies DemoRecord;
 }
 
-function resolveFlowType(record: DemoRecord): FlowType {
-  const combined = normalizeHeaderKey(`${record.tratamientoRealizado} ${record.casillaPresupuesto}`);
+function buildNormalizedFlowContext(record: DemoRecord) {
+  return normalizeHeaderKey(
+    [record.sheetName, record.tratamientoRealizado, record.casillaPresupuesto].filter(Boolean).join(" ")
+  );
+}
+
+export function resolveConversationFlowSelection(record: DemoRecord): FlowSelection {
   const normalizedActionType = normalizeActionTypeValue(record.tipoAccion);
+  const normalizedContext = buildNormalizedFlowContext(record);
 
   if (normalizedActionType === "cumpleanos") {
-    return "cumpleanos";
+    return {
+      normalizedActionType,
+      normalizedContext,
+      specialization: "cumpleanos",
+      flowType: "cumpleanos",
+      selectedTemplate: "birthday_initial",
+      fallbackUsed: false
+    };
   }
 
-  if (normalizedActionType === "promo" && combined.includes("implant")) {
-    return "implantologia_recuperacion";
+  if (normalizedActionType === "promo" && normalizedContext.includes("implant")) {
+    return {
+      normalizedActionType,
+      normalizedContext,
+      specialization: "implantologia",
+      flowType: "implantologia_recuperacion",
+      selectedTemplate: "implant_initial",
+      fallbackUsed: false
+    };
   }
 
-  if (normalizedActionType === "revision" && combined.includes("ortodon")) {
-    return "revision_ortodoncia";
+  if (normalizedActionType === "revision" && normalizedContext.includes("ortodon")) {
+    return {
+      normalizedActionType,
+      normalizedContext,
+      specialization: "ortodoncia",
+      flowType: "revision_ortodoncia",
+      selectedTemplate: "ortho_initial",
+      fallbackUsed: false
+    };
   }
 
-  return "";
+  return {
+    normalizedActionType,
+    normalizedContext,
+    specialization: "none",
+    flowType: "",
+    selectedTemplate: normalizedActionType,
+    fallbackUsed: true
+  };
+}
+
+function resolveFlowType(record: DemoRecord): FlowType {
+  return resolveConversationFlowSelection(record).flowType;
 }
 
 function baseFlowRecord(
