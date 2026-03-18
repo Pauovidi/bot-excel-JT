@@ -13,6 +13,12 @@ type ApiResult<T = unknown> = {
   code?: string;
 } & T;
 
+type DemoV2ClientConfig = {
+  enabled: boolean;
+  rowIndex: number;
+  validSheetNames: string[];
+};
+
 function buildEmptyState(): DemoState {
   return {
     version: 1,
@@ -35,10 +41,10 @@ function buildEmptyState(): DemoState {
   };
 }
 
-export function DemoDashboard() {
+export function DemoDashboard({ demoV2 }: { demoV2: DemoV2ClientConfig }) {
   const [state, setState] = useState<DemoState>(buildEmptyState);
   const [calendarUrl, setCalendarUrl] = useState("");
-  const [autoCheckEnabled, setAutoCheckEnabled] = useState(false);
+  const [autoCheckEnabled, setAutoCheckEnabled] = useState(demoV2.enabled);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -77,8 +83,12 @@ export function DemoDashboard() {
     ? "Archivo seleccionado. Pulsa “Procesar Excel” para cargarlo."
     : hasUploadedExcel
       ? state.uploadedFilePath?.startsWith("reconstructed:")
-        ? "Estado reconstruido desde Google Sheets. Ya puedes comprobar cambios o seguir la demo."
-        : "Excel procesado correctamente. Ya puedes crear Sheets."
+        ? demoV2.enabled
+          ? `Estado reconstruido desde Google Sheets. El modo v2 vigila solo la fila ${demoV2.rowIndex} de cada pestaña válida.`
+          : "Estado reconstruido desde Google Sheets. Ya puedes comprobar cambios o seguir la demo."
+        : demoV2.enabled
+          ? `Excel procesado correctamente. Ya puedes crear Sheets y dejar el modo v2 vigilando solo la fila ${demoV2.rowIndex}.`
+          : "Excel procesado correctamente. Ya puedes crear Sheets."
       : canRebuildFromSheets
         ? "No hay parseo en memoria. Usa “Simular refresco de estado” para reconstruir desde Google Sheets."
         : "Selecciona un Excel para continuar.";
@@ -130,6 +140,12 @@ export function DemoDashboard() {
   useEffect(() => {
     void loadState();
   }, [loadState]);
+
+  useEffect(() => {
+    if (demoV2.enabled) {
+      setAutoCheckEnabled(true);
+    }
+  }, [demoV2.enabled]);
 
   useEffect(() => {
     if (!autoCheckEnabled || !state.spreadsheetId || isBusy) {
@@ -287,7 +303,9 @@ export function DemoDashboard() {
           spreadsheetId: state.spreadsheetId || undefined
         })
       }),
-      "Fila actualizada. Ya puedes forzar la demo desde la tabla.",
+      demoV2.enabled
+        ? `Fila actualizada. El modo v2 solo evaluará la fila ${demoV2.rowIndex} de la hoja correspondiente.`
+        : "Fila actualizada. Ya puedes forzar la demo desde la tabla.",
       undefined,
       "No se pudo actualizar la fila.",
       "save"
@@ -407,7 +425,7 @@ export function DemoDashboard() {
         </article>
       </section>
 
-      <StepProgress state={state} autoCheckEnabled={autoCheckEnabled} />
+      <StepProgress state={state} autoCheckEnabled={autoCheckEnabled} demoV2={demoV2} />
 
       <section className="grid items-start gap-8 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <div className="min-w-0 space-y-8">
@@ -418,27 +436,35 @@ export function DemoDashboard() {
                 <h2 className="mt-2 text-2xl text-ink">Resultado del Excel</h2>
               </div>
               <div className="flex flex-wrap gap-3">
-                <button
-                  className="rounded-full border border-ink/15 bg-white/75 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={isBusy}
-                  onClick={() => {
-                    setAutoCheckEnabled((current) => !current);
-                    setFeedback(
-                      autoCheckEnabled
-                        ? "Auto-check desactivado. La demo queda en modo manual."
-                        : "Auto-check activado. Se comprobarán cambios cada 30s."
-                    );
-                  }}
-                >
-                  Auto-check {autoCheckEnabled ? "ON" : "OFF"}
-                </button>
-                <button
-                  className="rounded-full border border-ink/15 bg-white/75 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!state.spreadsheetId || isBusy}
-                  onClick={handleCheckChanges}
-                >
-                  {activeOperation === "check" ? "Comprobando..." : "Comprobar cambios"}
-                </button>
+                {!demoV2.enabled ? (
+                  <button
+                    className="rounded-full border border-ink/15 bg-white/75 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={isBusy}
+                    onClick={() => {
+                      setAutoCheckEnabled((current) => !current);
+                      setFeedback(
+                        autoCheckEnabled
+                          ? "Auto-check desactivado. La demo queda en modo manual."
+                          : "Auto-check activado. Se comprobarán cambios cada 30s."
+                      );
+                    }}
+                  >
+                    Auto-check {autoCheckEnabled ? "ON" : "OFF"}
+                  </button>
+                ) : (
+                  <span className="rounded-full border border-mint bg-mint/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-teal">
+                    V2 automático · fila {demoV2.rowIndex}
+                  </span>
+                )}
+                {!demoV2.enabled ? (
+                  <button
+                    className="rounded-full border border-ink/15 bg-white/75 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!state.spreadsheetId || isBusy}
+                    onClick={handleCheckChanges}
+                  >
+                    {activeOperation === "check" ? "Comprobando..." : "Comprobar cambios"}
+                  </button>
+                ) : null}
                 <button
                   className="rounded-full border border-ink/15 bg-white/75 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={isBusy}

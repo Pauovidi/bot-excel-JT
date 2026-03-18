@@ -152,7 +152,10 @@ function sheetRowToRecord(
     updatedAtDemo: data.updated_at_demo || nowIso(),
     validationErrors: existing?.validationErrors ?? [],
     originalData,
-    lastSentMessage: existing?.lastSentMessage || ""
+    lastSentMessage: existing?.lastSentMessage || "",
+    lastObservedHash: existing?.lastObservedHash,
+    v2TriggerPhone: existing?.v2TriggerPhone,
+    v2TriggerDate: existing?.v2TriggerDate
   } satisfies DemoRecord;
 }
 

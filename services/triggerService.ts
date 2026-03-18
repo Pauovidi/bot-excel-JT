@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import { nowIso } from "@/lib/dateUtils";
-import { buildTriggerHash, buildTriggerReopenHash } from "@/lib/hash";
+import { applyDemoV2SheetFlow, getDemoV2Config, getDemoV2TriggerDate, isDemoV2SingleRowEnabled } from "@/lib/demoV2";
+import { buildDemoV2ObservationHash, buildDemoV2RelevantHash, buildTriggerHash, buildTriggerReopenHash } from "@/lib/hash";
 import { normalizeActionTypeValue } from "@/lib/normalization";
 import { readState, updateState } from "@/lib/stateStore";
 import { hydrateOpenGuidedFlowRecord, prepareGuidedFlowStart } from "@/services/conversationFlowService";
@@ -95,6 +96,27 @@ function summarizeSheetState(record?: DemoRecord | null) {
   };
 }
 
+function summarizeDemoV2State(record?: DemoRecord | null) {
+  if (!record) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    sheetName: record.sheetName,
+    sheetRowNumber: record.sheetRowNumber,
+    telefono: record.telefono,
+    fechaTratamiento: record.fechaTratamiento,
+    fechaAccion: record.fechaAccion,
+    tipoAccion: record.tipoAccion,
+    flowType: record.flowType,
+    estadoWhatsapp: record.estadoWhatsapp,
+    lastProcessedHash: record.lastProcessedHash,
+    v2TriggerPhone: record.v2TriggerPhone,
+    v2TriggerDate: record.v2TriggerDate
+  };
+}
+
 export async function syncStateFromSheets(spreadsheetId?: string) {
   const state = await readState();
   const sheetRecords = (await readAllRowsFromSpreadsheet(spreadsheetId)).map(hydrateOpenGuidedFlowRecord);
@@ -121,7 +143,314 @@ export async function syncStateFromSheets(spreadsheetId?: string) {
   });
 }
 
+async function runDemoV2TriggerCheck(spreadsheetId?: string) {
+  const correlationId = randomUUID().slice(0, 8);
+  const config = getDemoV2Config();
+  const state = await readState();
+  const sheetRecords = await readAllRowsFromSpreadsheet(spreadsheetId);
+  const orderedRecords = config.validSheetNames.flatMap((sheetName) =>
+    sheetRecords
+      .filter((record) => record.sheetName === sheetName)
+      .sort((left, right) => left.sheetRowNumber - right.sheetRowNumber)
+  );
+  const trackedRecords = [...state.records];
+  let processedCount = 0;
+  let sentCount = 0;
+
+  console.info("[triggerService] v2 single-row mode enabled", {
+    correlationId,
+    validSheets: config.validSheetNames,
+    rowLocked: config.rowIndex
+  });
+
+  async function persistTrackedRecord(record: DemoRecord) {
+    await updateState((current) => {
+      upsertRecord(current.records, record);
+      current.steps.trigger_detected = "done";
+    });
+
+    upsertRecord(trackedRecords, record);
+  }
+
+  for (const record of orderedRecords) {
+    const existing =
+      trackedRecords.find((item) => item.id === record.id) ??
+      trackedRecords.find(
+        (item) => item.sheetName === record.sheetName && item.sheetRowNumber === record.sheetRowNumber
+      ) ??
+      null;
+    const triggerDate = getDemoV2TriggerDate(record);
+    const baselinePhone = existing?.v2TriggerPhone ?? existing?.telefono ?? record.telefono;
+    const baselineDate = existing?.v2TriggerDate ?? getDemoV2TriggerDate(existing ?? record);
+    const relevantHash = buildDemoV2RelevantHash(record.telefono, triggerDate);
+    const observationHash = buildDemoV2ObservationHash(record);
+    const previousObservationHash = existing ? existing.lastObservedHash ?? buildDemoV2ObservationHash(existing) : "";
+    const trackedRecord = {
+      ...record,
+      lastObservedHash: observationHash,
+      lastProcessedHash: existing?.lastProcessedHash ?? relevantHash,
+      v2TriggerPhone: existing?.v2TriggerPhone ?? baselinePhone,
+      v2TriggerDate: existing?.v2TriggerDate ?? baselineDate
+    } satisfies DemoRecord;
+
+    console.info("[triggerService] sheet detected", {
+      correlationId,
+      sheetName: record.sheetName,
+      rowNumber: record.sheetRowNumber
+    });
+
+    if (record.sheetRowNumber !== config.rowIndex) {
+      if (previousObservationHash !== observationHash) {
+        console.info("[triggerService] ignored row because not row 2", {
+          correlationId,
+          sheetName: record.sheetName,
+          rowNumber: record.sheetRowNumber,
+          rowLocked: config.rowIndex
+        });
+        await persistTrackedRecord(trackedRecord);
+        processedCount += 1;
+      }
+      continue;
+    }
+
+    console.info("[triggerService] row locked = 2", {
+      correlationId,
+      sheetName: record.sheetName,
+      rowLocked: config.rowIndex
+    });
+
+    if (!existing) {
+      await persistTrackedRecord({
+        ...trackedRecord,
+        lastProcessedHash: relevantHash,
+        v2TriggerPhone: record.telefono,
+        v2TriggerDate: triggerDate
+      });
+      continue;
+    }
+
+    const phoneChanged = record.telefono !== baselinePhone;
+    const dateChanged = triggerDate !== baselineDate;
+    const observedChanged = previousObservationHash !== observationHash;
+
+    if (!phoneChanged && !dateChanged) {
+      if (observedChanged) {
+        console.info("[triggerService] ignored non-relevant change", {
+          correlationId,
+          sheetName: record.sheetName,
+          rowNumber: record.sheetRowNumber,
+          before: summarizeDemoV2State(existing),
+          after: summarizeDemoV2State(trackedRecord)
+        });
+        console.info("[triggerService] outbound skipped no relevant double-change", {
+          correlationId,
+          sheetName: record.sheetName,
+          phoneChanged,
+          dateChanged
+        });
+        await persistTrackedRecord(trackedRecord);
+        processedCount += 1;
+      }
+      continue;
+    }
+
+    if (phoneChanged !== dateChanged) {
+      console.info(
+        phoneChanged
+          ? "[triggerService] ignored because only phone changed"
+          : "[triggerService] ignored because only date changed",
+        {
+          correlationId,
+          sheetName: record.sheetName,
+          rowNumber: record.sheetRowNumber,
+          baselinePhone,
+          currentPhone: record.telefono,
+          baselineDate,
+          currentDate: triggerDate
+        }
+      );
+      console.info("[triggerService] outbound skipped no relevant double-change", {
+        correlationId,
+        sheetName: record.sheetName,
+        phoneChanged,
+        dateChanged
+      });
+      await persistTrackedRecord(trackedRecord);
+      processedCount += 1;
+      continue;
+    }
+
+    const appliedFlow = applyDemoV2SheetFlow(record);
+    if (!appliedFlow) {
+      console.info("[triggerService] ignored non-relevant change", {
+        correlationId,
+        reason: "sheet_without_v2_flow_mapping",
+        sheetName: record.sheetName
+      });
+      await persistTrackedRecord(trackedRecord);
+      processedCount += 1;
+      continue;
+    }
+
+    console.info("[triggerService] relevant double-change detected", {
+      correlationId,
+      sheetName: record.sheetName,
+      rowNumber: record.sheetRowNumber,
+      previousPhone: baselinePhone,
+      currentPhone: record.telefono,
+      previousDate: baselineDate,
+      currentDate: triggerDate
+    });
+    console.info("[triggerService] flow selected from sheet", {
+      correlationId,
+      sheetName: record.sheetName,
+      selectedFlow: appliedFlow.config.selectedFlowLabel
+    });
+
+    const outboundBase = clearConversationState({
+      ...appliedFlow.record,
+      flowType: ""
+    });
+    const flowStart = prepareGuidedFlowStart(outboundBase);
+    let outboundRecord = flowStart?.record ?? outboundBase;
+    const selectedFlowType = flowStart?.record.flowType ?? appliedFlow.config.flowType;
+    const selectedTemplate = flowStart?.record.lastBotMessageType ?? appliedFlow.record.tipoAccion;
+    const reasonSelected = `sheet:${record.sheetName}`;
+
+    console.info("[triggerService] outbound flow candidate", {
+      correlationId,
+      selectedFlowType,
+      selectedTemplate,
+      reasonSelected,
+      sheetStateBefore: summarizeDemoV2State(existing)
+    });
+
+    let sentBody = "";
+    let sentSid = "";
+    try {
+      const sent = await sendWhatsApp(outboundRecord, {
+        body: flowStart?.message,
+        mediaUrl: flowStart?.mediaUrl
+      });
+      sentBody = sent.body;
+      sentSid = sent.sid;
+      sentCount += 1;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "No se pudo enviar el WhatsApp por Twilio.";
+      const failedRecord = {
+        ...outboundRecord,
+        estadoWhatsapp: "error" as const,
+        lastObservedHash: observationHash,
+        lastProcessedHash: relevantHash,
+        v2TriggerPhone: record.telefono,
+        v2TriggerDate: triggerDate,
+        updatedAtDemo: nowIso()
+      } satisfies DemoRecord;
+
+      await updateState((current) => {
+        upsertRecord(current.records, failedRecord);
+        current.steps.trigger_detected = "done";
+        current.steps.whatsapp_sent = "error";
+      });
+
+      upsertRecord(trackedRecords, failedRecord);
+
+      await updateRecordInSpreadsheet(failedRecord, spreadsheetId);
+      await logActivity({
+        correlationId,
+        paciente: record.nombre,
+        telefono: record.telefono,
+        accion: "whatsapp_error",
+        resultado: "error",
+        detalle: errorMessage
+      });
+      processedCount += 1;
+      break;
+    }
+
+    const updatedRecord = {
+      ...outboundRecord,
+      estadoWhatsapp: "enviado" as const,
+      ultimaRespuesta: "",
+      intencion: "" as const,
+      lastUserMessage: "",
+      intentDetected: "",
+      selectedSlot: "",
+      conversationClosed: false,
+      lastSentMessage: sentBody,
+      lastObservedHash: observationHash,
+      lastProcessedHash: relevantHash,
+      v2TriggerPhone: record.telefono,
+      v2TriggerDate: triggerDate,
+      updatedAtDemo: nowIso()
+    } satisfies DemoRecord;
+
+    await updateState((current) => {
+      upsertRecord(current.records, updatedRecord);
+      current.steps.trigger_detected = "done";
+      current.steps.whatsapp_sent = "done";
+    });
+
+    upsertRecord(trackedRecords, updatedRecord);
+
+    try {
+      await updateRecordInSpreadsheet(updatedRecord, spreadsheetId);
+    } catch (error) {
+      console.warn("[triggerService] could not sync outbound WhatsApp state to Google Sheets", error);
+    }
+
+    console.info("[triggerService] outbound sent in v2", {
+      correlationId,
+      sentSid,
+      sheetName: record.sheetName,
+      rowNumber: record.sheetRowNumber,
+      sheetStateAfter: summarizeDemoV2State(updatedRecord)
+    });
+
+    await logActivity({
+      correlationId,
+      paciente: record.nombre,
+      telefono: record.telefono,
+      accion: "trigger_detected_v2",
+      resultado: "ok",
+      detalle: `Cambio doble detectado en fila ${config.rowIndex} de ${record.sheetName}.`
+    });
+    await logActivity({
+      correlationId,
+      paciente: record.nombre,
+      telefono: record.telefono,
+      accion: "whatsapp_sent",
+      resultado: "ok",
+      detalle: `Mensaje enviado por Twilio (${sentSid}) en modo v2.`
+    });
+
+    for (const flowLog of flowStart?.logs ?? []) {
+      await logActivity({
+        correlationId,
+        paciente: record.nombre,
+        telefono: record.telefono,
+        accion: flowLog.accion,
+        resultado: flowLog.resultado,
+        detalle: flowLog.detalle
+      });
+    }
+
+    processedCount += 1;
+    break;
+  }
+
+  return {
+    changed: processedCount,
+    sent: sentCount
+  };
+}
+
 async function runTriggerCheck(spreadsheetId?: string) {
+  if (isDemoV2SingleRowEnabled()) {
+    return runDemoV2TriggerCheck(spreadsheetId);
+  }
+
   const correlationId = randomUUID().slice(0, 8);
   const state = await readState();
   const sheetRecords = (await readAllRowsFromSpreadsheet(spreadsheetId)).map(hydrateOpenGuidedFlowRecord);
