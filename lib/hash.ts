@@ -21,8 +21,8 @@ export function buildTriggerReopenHash(record: DemoRecord) {
   return digestParts([record.tipoAccion ?? "", record.fechaAccion ?? "", record.horaCita ?? ""]);
 }
 
-export function buildDemoV2RelevantHash(phone: string, triggerDate: string) {
-  return digestParts([phone ?? "", triggerDate ?? ""]);
+export function buildDemoV2RelevantHash(phone: string, triggerDate: string, actionType: string) {
+  return digestParts([phone ?? "", triggerDate ?? "", actionType ?? ""]);
 }
 
 export function buildDemoV2ObservationHash(record: DemoRecord) {

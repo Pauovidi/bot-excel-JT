@@ -80,21 +80,29 @@ function onDemoV2Edit(e) {
 
     const phoneChanged = snapshot.phone !== baseline.phone;
     const dateChanged = snapshot.treatmentDate !== baseline.treatmentDate;
+    const actionChanged = snapshot.actionType !== baseline.actionType;
 
-    if (!phoneChanged && !dateChanged) {
+    console.log('[AppsScript] sheet valid', sheetName);
+    console.log('[AppsScript] row valid', DEMO_V2_CONFIG.monitoredRow);
+    console.log('[AppsScript] phone changed', phoneChanged);
+    console.log('[AppsScript] date changed', dateChanged);
+    console.log('[AppsScript] tipo_accion changed', actionChanged);
+
+    if (!phoneChanged && !dateChanged && !actionChanged) {
       console.log('[AppsScript] ignored non-relevant change', sheetName);
       return;
     }
 
-    if (phoneChanged !== dateChanged) {
-      console.log(
-        phoneChanged ? '[AppsScript] ignored because only phone changed' : '[AppsScript] ignored because only date changed',
-        sheetName
-      );
+    if (!(phoneChanged && dateChanged && actionChanged)) {
+      if (actionChanged && !phoneChanged && !dateChanged) {
+        console.log('[AppsScript] ignored because only tipo_accion changed', sheetName);
+      } else {
+        console.log('[AppsScript] ignored because only phone/date changed', sheetName);
+      }
       return;
     }
 
-    console.log('[AppsScript] relevant double-change detected', sheetName, snapshot);
+    console.log('[AppsScript] relevant triple-change detected', sheetName, snapshot);
 
     const response = UrlFetchApp.fetch(getDemoV2EndpointUrl(), {
       method: 'post',

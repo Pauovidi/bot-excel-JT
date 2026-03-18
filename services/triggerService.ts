@@ -114,7 +114,8 @@ function summarizeDemoV2State(record?: DemoRecord | null) {
     estadoWhatsapp: record.estadoWhatsapp,
     lastProcessedHash: record.lastProcessedHash,
     v2TriggerPhone: record.v2TriggerPhone,
-    v2TriggerDate: record.v2TriggerDate
+    v2TriggerDate: record.v2TriggerDate,
+    v2TriggerAction: record.v2TriggerAction
   };
 }
 
@@ -302,25 +303,35 @@ export async function processDemoV2SheetEdit(input: {
     ) ??
     null;
   const triggerDate = getDemoV2TriggerDate(liveRecord);
-  const relevantHash = buildDemoV2RelevantHash(liveRecord.telefono, triggerDate);
+  const currentAction = normalizeActionTypeValue(liveRecord.tipoAccion, liveRecord.tipoAccion);
+  const relevantHash = buildDemoV2RelevantHash(liveRecord.telefono, triggerDate, currentAction);
   const observationHash = buildDemoV2ObservationHash(liveRecord);
   const previousObservationHash = existing ? existing.lastObservedHash ?? buildDemoV2ObservationHash(existing) : "";
   const baselinePhone = existing?.v2TriggerPhone ?? existing?.telefono ?? liveRecord.telefono;
   const baselineDate = existing?.v2TriggerDate ?? getDemoV2TriggerDate(existing ?? liveRecord);
+  const baselineAction =
+    existing?.v2TriggerAction ??
+    normalizeActionTypeValue(existing?.tipoAccion ?? liveRecord.tipoAccion, liveRecord.tipoAccion);
   const trackedRecord = {
     ...liveRecord,
     lastObservedHash: observationHash,
     lastProcessedHash: existing?.lastProcessedHash ?? relevantHash,
     v2TriggerPhone: existing?.v2TriggerPhone ?? baselinePhone,
-    v2TriggerDate: existing?.v2TriggerDate ?? baselineDate
+    v2TriggerDate: existing?.v2TriggerDate ?? baselineDate,
+    v2TriggerAction: existing?.v2TriggerAction ?? baselineAction
   } satisfies DemoRecord;
 
-  console.info("[triggerService] sheet detected", {
+  console.info("[triggerService] v2 push received", {
     correlationId,
     sheetName: liveRecord.sheetName,
     rowNumber: liveRecord.sheetRowNumber
   });
-  console.info("[triggerService] row locked = 2", {
+  console.info("[triggerService] sheet valid", {
+    correlationId,
+    sheetName: liveRecord.sheetName,
+    rowNumber: liveRecord.sheetRowNumber
+  });
+  console.info("[triggerService] row valid", {
     correlationId,
     sheetName: liveRecord.sheetName,
     rowLocked: config.rowIndex
@@ -332,12 +343,13 @@ export async function processDemoV2SheetEdit(input: {
         ...trackedRecord,
         lastProcessedHash: relevantHash,
         v2TriggerPhone: liveRecord.telefono,
-        v2TriggerDate: triggerDate
+        v2TriggerDate: triggerDate,
+        v2TriggerAction: currentAction
       });
       current.steps.trigger_detected = "done";
     });
 
-    console.info("[triggerService] outbound skipped no relevant double-change", {
+    console.info("[triggerService] outbound skipped no relevant triple-change", {
       correlationId,
       reason: "initial_baseline_seeded",
       sheetName: liveRecord.sheetName
@@ -354,9 +366,23 @@ export async function processDemoV2SheetEdit(input: {
 
   const phoneChanged = liveRecord.telefono !== baselinePhone;
   const dateChanged = triggerDate !== baselineDate;
+  const actionChanged = currentAction !== baselineAction;
   const observedChanged = previousObservationHash !== observationHash;
 
-  if (!phoneChanged && !dateChanged) {
+  console.info("[triggerService] phone changed", {
+    correlationId,
+    value: phoneChanged
+  });
+  console.info("[triggerService] date changed", {
+    correlationId,
+    value: dateChanged
+  });
+  console.info("[triggerService] tipo_accion changed", {
+    correlationId,
+    value: actionChanged
+  });
+
+  if (!phoneChanged && !dateChanged && !actionChanged) {
     if (observedChanged) {
       console.info("[triggerService] ignored non-relevant change", {
         correlationId,
@@ -370,7 +396,7 @@ export async function processDemoV2SheetEdit(input: {
         current.steps.trigger_detected = "done";
       });
     } else {
-      console.info("[triggerService] outbound skipped no relevant double-change", {
+      console.info("[triggerService] outbound skipped no relevant triple-change", {
         correlationId,
         reason: "duplicate_pair",
         sheetName: liveRecord.sheetName
@@ -386,34 +412,42 @@ export async function processDemoV2SheetEdit(input: {
     } satisfies DemoV2PushResult;
   }
 
-  if (phoneChanged !== dateChanged) {
-    console.info(
-      phoneChanged
-        ? "[triggerService] ignored because only phone changed"
-        : "[triggerService] ignored because only date changed",
-      {
+  if (!(phoneChanged && dateChanged && actionChanged)) {
+    if (actionChanged && !phoneChanged && !dateChanged) {
+      console.info("[triggerService] ignored because only tipo_accion changed", {
+        correlationId,
+        sheetName: liveRecord.sheetName,
+        rowNumber: liveRecord.sheetRowNumber,
+        baselineAction,
+        currentAction
+      });
+    } else {
+      console.info("[triggerService] ignored because only phone/date changed", {
         correlationId,
         sheetName: liveRecord.sheetName,
         rowNumber: liveRecord.sheetRowNumber,
         baselinePhone,
         currentPhone: liveRecord.telefono,
         baselineDate,
-        currentDate: triggerDate
-      }
-    );
+        currentDate: triggerDate,
+        baselineAction,
+        currentAction
+      });
+    }
     await updateState((current) => {
       upsertRecord(current.records, trackedRecord);
       current.steps.trigger_detected = "done";
     });
-    console.info("[triggerService] outbound skipped no relevant double-change", {
+    console.info("[triggerService] outbound skipped no relevant triple-change", {
       correlationId,
       sheetName: liveRecord.sheetName,
       phoneChanged,
-      dateChanged
+      dateChanged,
+      actionChanged
     });
     return {
       ok: true,
-      reason: phoneChanged ? "only_phone_changed" : "only_date_changed",
+      reason: "non_relevant_change",
       changed: 1,
       sent: 0,
       sheetName: liveRecord.sheetName,
@@ -421,21 +455,23 @@ export async function processDemoV2SheetEdit(input: {
     } satisfies DemoV2PushResult;
   }
 
-  console.info("[triggerService] relevant double-change detected", {
+  console.info("[triggerService] relevant triple-change detected", {
     correlationId,
     sheetName: liveRecord.sheetName,
     rowNumber: liveRecord.sheetRowNumber,
     previousPhone: baselinePhone,
     currentPhone: liveRecord.telefono,
     previousDate: baselineDate,
-    currentDate: triggerDate
+    currentDate: triggerDate,
+    previousAction: baselineAction,
+    currentAction
   });
 
   const flowDecision = getDemoV2FlowDecision(liveRecord);
   console.info("[triggerService] flow selected from tipo_accion + sheet context", {
     correlationId,
     sheetName: liveRecord.sheetName,
-    tipoAccion: liveRecord.tipoAccion,
+    tipoAccion: currentAction,
     decision: flowDecision.decision
   });
 
@@ -454,7 +490,7 @@ export async function processDemoV2SheetEdit(input: {
       });
       current.steps.trigger_detected = "done";
     });
-    console.info("[triggerService] outbound skipped no relevant double-change", {
+    console.info("[triggerService] outbound skipped no relevant triple-change", {
       correlationId,
       reason: "validation_or_missing_date",
       sheetName: liveRecord.sheetName
@@ -488,6 +524,7 @@ export async function processDemoV2SheetEdit(input: {
       lastProcessedHash: relevantHash,
       v2TriggerPhone: liveRecord.telefono,
       v2TriggerDate: triggerDate,
+      v2TriggerAction: currentAction,
       updatedAtDemo: nowIso()
     } satisfies DemoRecord;
 
@@ -522,6 +559,7 @@ export async function processDemoV2SheetEdit(input: {
     lastProcessedHash: relevantHash,
     v2TriggerPhone: liveRecord.telefono,
     v2TriggerDate: triggerDate,
+    v2TriggerAction: currentAction,
     updatedAtDemo: nowIso()
   } satisfies DemoRecord;
 

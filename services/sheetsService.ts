@@ -155,7 +155,8 @@ function sheetRowToRecord(
     lastSentMessage: existing?.lastSentMessage || "",
     lastObservedHash: existing?.lastObservedHash,
     v2TriggerPhone: existing?.v2TriggerPhone,
-    v2TriggerDate: existing?.v2TriggerDate
+    v2TriggerDate: existing?.v2TriggerDate,
+    v2TriggerAction: existing?.v2TriggerAction
   } satisfies DemoRecord;
 }
 

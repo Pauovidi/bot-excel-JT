@@ -411,6 +411,9 @@ export function DemoDashboard({ demoV2 }: { demoV2: DemoV2ClientConfig }) {
                   Fila monitorizada: {demoV2.rowIndex}
                 </span>
                 <span className="rounded-full border border-white/70 bg-white/80 px-3 py-1 text-xs font-semibold text-ink/70">
+                  Disparo: teléfono + fecha + tipo_accion
+                </span>
+                <span className="rounded-full border border-white/70 bg-white/80 px-3 py-1 text-xs font-semibold text-ink/70">
                   Hojas activas: {demoV2.validSheetNames.join(", ")}
                 </span>
               </div>

@@ -94,10 +94,11 @@ export async function POST(request: Request) {
         const triggerDate = getDemoV2TriggerDate(record);
         return {
           ...record,
-          lastProcessedHash: buildDemoV2RelevantHash(record.telefono, triggerDate),
+          lastProcessedHash: buildDemoV2RelevantHash(record.telefono, triggerDate, record.tipoAccion),
           lastObservedHash: buildDemoV2ObservationHash(record),
           v2TriggerPhone: record.telefono,
-          v2TriggerDate: triggerDate
+          v2TriggerDate: triggerDate,
+          v2TriggerAction: record.tipoAccion
         };
       }
 
@@ -106,7 +107,8 @@ export async function POST(request: Request) {
         lastProcessedHash: buildTriggerHash(record),
         lastObservedHash: undefined,
         v2TriggerPhone: undefined,
-        v2TriggerDate: undefined
+        v2TriggerDate: undefined,
+        v2TriggerAction: undefined
       };
     });
     const spreadsheet = await syncRecordsToSpreadsheet(preparedRecords, {
