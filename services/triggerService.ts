@@ -336,6 +336,18 @@ export async function processDemoV2SheetEdit(input: {
     sheetName: liveRecord.sheetName,
     rowLocked: config.rowIndex
   });
+  console.info("[triggerService] baseline processed values", {
+    correlationId,
+    phone: baselinePhone,
+    date: baselineDate,
+    action: baselineAction
+  });
+  console.info("[triggerService] current row values", {
+    correlationId,
+    phone: liveRecord.telefono,
+    date: triggerDate,
+    action: currentAction
+  });
 
   if (!existing) {
     await updateState((current) => {
@@ -353,6 +365,10 @@ export async function processDemoV2SheetEdit(input: {
       correlationId,
       reason: "initial_baseline_seeded",
       sheetName: liveRecord.sheetName
+    });
+    console.info("[triggerService] skip reason", {
+      correlationId,
+      reason: "initial_baseline_seeded"
     });
     return {
       ok: true,
@@ -401,6 +417,10 @@ export async function processDemoV2SheetEdit(input: {
         reason: "duplicate_pair",
         sheetName: liveRecord.sheetName
       });
+      console.info("[triggerService] skip reason", {
+        correlationId,
+        reason: "duplicate_pair"
+      });
     }
     return {
       ok: true,
@@ -445,6 +465,10 @@ export async function processDemoV2SheetEdit(input: {
       dateChanged,
       actionChanged
     });
+    console.info("[triggerService] skip reason", {
+      correlationId,
+      reason: actionChanged && !phoneChanged && !dateChanged ? "only_action_changed" : "partial_triple_change"
+    });
     return {
       ok: true,
       reason: "non_relevant_change",
@@ -465,6 +489,11 @@ export async function processDemoV2SheetEdit(input: {
     currentDate: triggerDate,
     previousAction: baselineAction,
     currentAction
+  });
+  console.info("[triggerService] triple change accepted", {
+    correlationId,
+    sheetName: liveRecord.sheetName,
+    rowNumber: liveRecord.sheetRowNumber
   });
 
   const flowDecision = getDemoV2FlowDecision(liveRecord);
@@ -495,6 +524,10 @@ export async function processDemoV2SheetEdit(input: {
       reason: "validation_or_missing_date",
       sheetName: liveRecord.sheetName
     });
+    console.info("[triggerService] skip reason", {
+      correlationId,
+      reason: "validation_or_missing_date"
+    });
     return {
       ok: true,
       reason: "non_relevant_change",
@@ -508,6 +541,13 @@ export async function processDemoV2SheetEdit(input: {
   let sentBody = "";
   let sentSid = "";
   try {
+    console.info("[triggerService] whatsapp dispatch attempted", {
+      correlationId,
+      sheetName: liveRecord.sheetName,
+      rowNumber: liveRecord.sheetRowNumber,
+      telefono: liveRecord.telefono,
+      flowDecision: flowDecision.decision
+    });
     const sent = await sendWhatsApp(outboundRecord, {
       body: flowStart?.message,
       mediaUrl: flowStart?.mediaUrl

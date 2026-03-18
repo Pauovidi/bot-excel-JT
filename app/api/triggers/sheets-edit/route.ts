@@ -11,6 +11,9 @@ type SheetsEditPayload = {
   sheetName?: string;
   rowNumber?: number;
   editId?: string;
+  currentPhone?: string;
+  currentDate?: string;
+  currentAction?: string;
 };
 
 async function readPayload(request: Request): Promise<SheetsEditPayload> {
@@ -37,6 +40,8 @@ function hasValidSecret(request: Request) {
 }
 
 export async function POST(request: Request) {
+  console.info("[api/triggers/sheets-edit] v2 push endpoint hit");
+
   if (!isDemoV2SingleRowEnabled()) {
     return NextResponse.json(
       {
@@ -58,6 +63,7 @@ export async function POST(request: Request) {
   }
 
   const payload = await readPayload(request);
+  console.info("[api/triggers/sheets-edit] payload parsed", payload);
   const config = getDemoV2Config();
   const sheetName = payload.sheetName?.trim() || "";
   const rowNumber = Number(payload.rowNumber || config.rowIndex);

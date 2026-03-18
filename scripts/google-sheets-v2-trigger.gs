@@ -71,38 +71,34 @@ function onDemoV2Edit(e) {
       return;
     }
 
-    const baseline = readDemoV2Baseline(sheetName) || snapshot;
-    if (!readDemoV2Baseline(sheetName)) {
-      writeDemoV2Baseline(sheetName, snapshot);
-      console.log('[AppsScript] baseline seeded', sheetName);
-      return;
-    }
-
-    const phoneChanged = snapshot.phone !== baseline.phone;
-    const dateChanged = snapshot.treatmentDate !== baseline.treatmentDate;
-    const actionChanged = snapshot.actionType !== baseline.actionType;
+    const baseline = readDemoV2Baseline(sheetName);
+    const phoneChanged = baseline ? snapshot.phone !== baseline.phone : false;
+    const dateChanged = baseline ? snapshot.treatmentDate !== baseline.treatmentDate : false;
+    const actionChanged = baseline ? snapshot.actionType !== baseline.actionType : false;
+    const accumulatedTripleChangeReached = Boolean(
+      baseline && phoneChanged && dateChanged && actionChanged
+    );
 
     console.log('[AppsScript] sheet valid', sheetName);
     console.log('[AppsScript] row valid', DEMO_V2_CONFIG.monitoredRow);
+    console.log('[AppsScript] baseline phone/date/action', baseline ? JSON.stringify(baseline) : 'null');
+    console.log('[AppsScript] current phone/date/action', JSON.stringify(snapshot));
     console.log('[AppsScript] phone changed', phoneChanged);
     console.log('[AppsScript] date changed', dateChanged);
-    console.log('[AppsScript] tipo_accion changed', actionChanged);
+    console.log('[AppsScript] action changed', actionChanged);
+    console.log('[AppsScript] accumulated triple change reached', accumulatedTripleChangeReached);
 
-    if (!phoneChanged && !dateChanged && !actionChanged) {
-      console.log('[AppsScript] ignored non-relevant change', sheetName);
-      return;
-    }
+    const payload = {
+      editId: buildDemoV2EditId_(sheetName),
+      spreadsheetId: SpreadsheetApp.getActive().getId(),
+      sheetName: sheetName,
+      rowNumber: DEMO_V2_CONFIG.monitoredRow,
+      currentPhone: snapshot.phone,
+      currentDate: snapshot.treatmentDate,
+      currentAction: snapshot.actionType
+    };
 
-    if (!(phoneChanged && dateChanged && actionChanged)) {
-      if (actionChanged && !phoneChanged && !dateChanged) {
-        console.log('[AppsScript] ignored because only tipo_accion changed', sheetName);
-      } else {
-        console.log('[AppsScript] ignored because only phone/date changed', sheetName);
-      }
-      return;
-    }
-
-    console.log('[AppsScript] relevant triple-change detected', sheetName, snapshot);
+    console.log('[AppsScript] payload sent', JSON.stringify(payload));
 
     const response = UrlFetchApp.fetch(getDemoV2EndpointUrl(), {
       method: 'post',
@@ -111,17 +107,13 @@ function onDemoV2Edit(e) {
       headers: {
         'x-demo-v2-secret': getDemoV2PushSecret()
       },
-      payload: JSON.stringify({
-        editId: buildDemoV2EditId_(sheetName),
-        spreadsheetId: SpreadsheetApp.getActive().getId(),
-        sheetName: sheetName,
-        rowNumber: DEMO_V2_CONFIG.monitoredRow
-      })
+      payload: JSON.stringify(payload)
     });
 
     const statusCode = response.getResponseCode();
     const responseText = response.getContentText();
-    console.log('[AppsScript] endpoint response', statusCode, responseText);
+    console.log('[AppsScript] response code', statusCode);
+    console.log('[AppsScript] response body', responseText);
 
     if (statusCode < 200 || statusCode >= 300) {
       return;
