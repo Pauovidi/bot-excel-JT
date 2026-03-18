@@ -38,6 +38,7 @@ function buildEmptyState(): DemoState {
 export function DemoDashboard() {
   const [state, setState] = useState<DemoState>(buildEmptyState);
   const [calendarUrl, setCalendarUrl] = useState("");
+  const [autoCheckEnabled, setAutoCheckEnabled] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -128,20 +129,10 @@ export function DemoDashboard() {
 
   useEffect(() => {
     void loadState();
-
-    if (isBusy) {
-      return;
-    }
-
-    const refreshInterval = window.setInterval(() => {
-      void loadState();
-    }, 15000);
-
-    return () => window.clearInterval(refreshInterval);
-  }, [isBusy, loadState]);
+  }, [loadState]);
 
   useEffect(() => {
-    if (!state.spreadsheetId || isBusy) {
+    if (!autoCheckEnabled || !state.spreadsheetId || isBusy) {
       return;
     }
 
@@ -158,7 +149,7 @@ export function DemoDashboard() {
     }, 30000);
 
     return () => window.clearInterval(triggerInterval);
-  }, [isBusy, state.spreadsheetId, loadState]);
+  }, [autoCheckEnabled, isBusy, state.spreadsheetId, loadState]);
 
   async function runAction<T extends { state?: DemoState } = { state?: DemoState }>(
     input: Promise<Response>,
@@ -416,7 +407,7 @@ export function DemoDashboard() {
         </article>
       </section>
 
-      <StepProgress state={state} />
+      <StepProgress state={state} autoCheckEnabled={autoCheckEnabled} />
 
       <section className="grid items-start gap-8 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <div className="min-w-0 space-y-8">
@@ -427,6 +418,20 @@ export function DemoDashboard() {
                 <h2 className="mt-2 text-2xl text-ink">Resultado del Excel</h2>
               </div>
               <div className="flex flex-wrap gap-3">
+                <button
+                  className="rounded-full border border-ink/15 bg-white/75 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={isBusy}
+                  onClick={() => {
+                    setAutoCheckEnabled((current) => !current);
+                    setFeedback(
+                      autoCheckEnabled
+                        ? "Auto-check desactivado. La demo queda en modo manual."
+                        : "Auto-check activado. Se comprobarán cambios cada 30s."
+                    );
+                  }}
+                >
+                  Auto-check {autoCheckEnabled ? "ON" : "OFF"}
+                </button>
                 <button
                   className="rounded-full border border-ink/15 bg-white/75 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={!state.spreadsheetId || isBusy}

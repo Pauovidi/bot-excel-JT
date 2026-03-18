@@ -10,6 +10,7 @@ import {
   buildReconstructedImportSummary,
   getSpreadsheetUrl,
   readAllRowsFromSpreadsheet,
+  readRecordByIdFromSpreadsheet,
   updateRecordInSpreadsheet
 } from "@/services/sheetsService";
 import { sendWhatsApp } from "@/services/twilioService";
@@ -48,6 +49,9 @@ function isConversationOpen(record: DemoRecord) {
 function clearConversationState(record: DemoRecord) {
   return {
     ...record,
+    estadoWhatsapp: "pendiente",
+    ultimaRespuesta: "",
+    intencion: "",
     flowType: "",
     conversationState: "",
     lastBotMessageType: "",
@@ -55,7 +59,8 @@ function clearConversationState(record: DemoRecord) {
     intentDetected: "",
     proposedSlots: [],
     selectedSlot: "",
-    conversationClosed: false
+    conversationClosed: false,
+    lastSentMessage: ""
   } satisfies DemoRecord;
 }
 
@@ -153,12 +158,21 @@ async function runTriggerCheck(spreadsheetId?: string) {
       continue;
     }
 
+    const previousFlowType = latestRecord?.flowType ?? "";
+    const previousTipoAccion = latestRecord?.tipoAccion ?? "";
+    const previousTipoAccionNormalized = normalizeActionTypeValue(previousTipoAccion, previousTipoAccion);
+    let currentTipoAccionRaw = record.tipoAccion;
+    let currentTipoAccionNormalized = normalizeActionTypeValue(currentTipoAccionRaw, currentTipoAccionRaw);
     const reopenedHashChanged =
       buildTriggerReopenHash(latestRecord ?? record) !== buildTriggerReopenHash(record);
+    const tipoAccionChanged = previousTipoAccionNormalized !== currentTipoAccionNormalized;
     const openConversation = latestRecord ? isConversationOpen(latestRecord) : false;
     const closedConversation = latestRecord
       ? latestRecord.conversationClosed || isConversationClosed(latestRecord)
       : false;
+    let currentRecord = record;
+    let flowTypeRecomputed = "";
+    let staleFlowStateCleared = false;
 
     console.info("[triggerService] outbound candidate", {
       correlationId,
@@ -219,6 +233,91 @@ async function runTriggerCheck(spreadsheetId?: string) {
       continue;
     }
 
+    if ((openConversation || closedConversation) && reopenedHashChanged && tipoAccionChanged) {
+      const reloadedRecord = await readRecordByIdFromSpreadsheet(record.id, spreadsheetId);
+      if (!reloadedRecord) {
+        console.info("[triggerService] outbound skipped due to stale flow", {
+          correlationId,
+          reason: "record_not_found_after_rehydrate",
+          previousFlowType,
+          previousTipoAccion,
+          currentTipoAccionRaw,
+          currentTipoAccionNormalized,
+          flowTypeRecomputed: "",
+          staleFlowStateCleared: false
+        });
+        await logActivity({
+          correlationId,
+          paciente: record.nombre,
+          telefono: record.telefono,
+          accion: "trigger_skipped_stale_flow",
+          resultado: "record_not_found_after_rehydrate",
+          detalle: "Se omitió el envío porque no se pudo recargar la fila actual desde Google Sheets."
+        });
+        continue;
+      }
+
+      const reloadedTipoAccionRaw = reloadedRecord.tipoAccion;
+      const reloadedTipoAccionNormalized = normalizeActionTypeValue(
+        reloadedTipoAccionRaw,
+        reloadedTipoAccionRaw
+      );
+
+      if (reloadedTipoAccionNormalized !== currentTipoAccionNormalized) {
+        console.info("[triggerService] outbound skipped due to stale flow", {
+          correlationId,
+          reason: "tipo_accion_changed_during_rehydrate",
+          previousFlowType,
+          previousTipoAccion,
+          currentTipoAccionRaw: reloadedTipoAccionRaw,
+          currentTipoAccionNormalized: reloadedTipoAccionNormalized,
+          flowTypeRecomputed: "",
+          staleFlowStateCleared: false
+        });
+        await logActivity({
+          correlationId,
+          paciente: reloadedRecord.nombre,
+          telefono: reloadedRecord.telefono,
+          accion: "trigger_skipped_stale_flow",
+          resultado: "tipo_accion_changed_during_rehydrate",
+          detalle: "Se omitió el envío porque la fila cambió durante la rehidratación y el flujo ya no era estable."
+        });
+        continue;
+      }
+
+      const rehydratedRecord = clearConversationState({
+        ...reloadedRecord,
+        tipoAccion: reloadedTipoAccionNormalized
+      });
+      const rehydratedFlow = prepareGuidedFlowStart(rehydratedRecord);
+
+      currentTipoAccionRaw = reloadedTipoAccionRaw;
+      currentTipoAccionNormalized = reloadedTipoAccionNormalized;
+      flowTypeRecomputed = rehydratedFlow?.record.flowType ?? "";
+      staleFlowStateCleared = Boolean(
+        previousFlowType ||
+          previousTipoAccion ||
+          latestRecord?.conversationState ||
+          latestRecord?.intentDetected ||
+          latestRecord?.intencion ||
+          latestRecord?.ultimaRespuesta
+      );
+      currentRecord = {
+        ...rehydratedRecord,
+        lastProcessedHash: buildTriggerHash(rehydratedRecord)
+      };
+
+      console.info("[triggerService] reopen detected", {
+        correlationId,
+        previousFlowType,
+        previousTipoAccion,
+        currentTipoAccionRaw,
+        currentTipoAccionNormalized,
+        flowTypeRecomputed,
+        staleFlowStateCleared
+      });
+    }
+
     if ((openConversation || closedConversation) && reopenedHashChanged) {
       await logActivity({
         correlationId,
@@ -231,34 +330,34 @@ async function runTriggerCheck(spreadsheetId?: string) {
     } else {
       await logActivity({
         correlationId,
-        paciente: record.nombre,
-        telefono: record.telefono,
+        paciente: currentRecord.nombre,
+        telefono: currentRecord.telefono,
         accion: "trigger_detected",
         resultado: "ok",
-        detalle: `Cambio detectado en ${record.sheetName} para ${record.tratamientoRealizado}.`
+        detalle: `Cambio detectado en ${currentRecord.sheetName} para ${currentRecord.tratamientoRealizado}.`
       });
     }
     processedCount += 1;
 
-    if (shouldSkipTrigger(record)) {
+    if (shouldSkipTrigger(currentRecord)) {
       await updateState((current) => {
         upsertRecord(current.records, {
-          ...record,
+          ...currentRecord,
           updatedAtDemo: nowIso()
         });
         current.steps.trigger_detected = "done";
       });
-      await updateRecordInSpreadsheet(record, spreadsheetId);
+      await updateRecordInSpreadsheet(currentRecord, spreadsheetId);
       console.info("[triggerService] outbound skipped reason", {
         correlationId,
         reason: "missing_date_or_validation",
         sheetStateBefore: summarizeSheetState(latestRecord),
-        sheetStateAfter: summarizeSheetState(record)
+        sheetStateAfter: summarizeSheetState(currentRecord)
       });
       await logActivity({
         correlationId,
-        paciente: record.nombre,
-        telefono: record.telefono,
+        paciente: currentRecord.nombre,
+        telefono: currentRecord.telefono,
         accion: "trigger_skipped",
         resultado: "sin_fecha_o_validacion",
         detalle: "Cambio detectado pero sin fecha válida o con error de validación."
@@ -266,9 +365,12 @@ async function runTriggerCheck(spreadsheetId?: string) {
       continue;
     }
 
-    const normalizedTipoAccion = normalizeActionTypeValue(record.tipoAccion, record.tipoAccion);
+    const normalizedTipoAccion = normalizeActionTypeValue(
+      currentRecord.tipoAccion,
+      currentRecord.tipoAccion
+    );
     const normalizedRecord = {
-      ...record,
+      ...currentRecord,
       tipoAccion: normalizedTipoAccion
     } satisfies DemoRecord;
     const flowStart = prepareGuidedFlowStart(clearConversationState(normalizedRecord));
@@ -308,7 +410,7 @@ async function runTriggerCheck(spreadsheetId?: string) {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "No se pudo enviar el WhatsApp por Twilio.";
       const failedRecord = {
-        ...record,
+        ...currentRecord,
         estadoWhatsapp: "error" as const,
         updatedAtDemo: nowIso()
       };
@@ -322,8 +424,8 @@ async function runTriggerCheck(spreadsheetId?: string) {
       await updateRecordInSpreadsheet(failedRecord, spreadsheetId);
       await logActivity({
         correlationId,
-        paciente: record.nombre,
-        telefono: record.telefono,
+        paciente: currentRecord.nombre,
+        telefono: currentRecord.telefono,
         accion: "whatsapp_error",
         resultado: "error",
         detalle: errorMessage
@@ -362,11 +464,23 @@ async function runTriggerCheck(spreadsheetId?: string) {
       sheetStateBefore: summarizeSheetState(latestRecord),
       sheetStateAfter: summarizeSheetState(updatedRecord)
     });
+    if ((openConversation || closedConversation) && reopenedHashChanged && tipoAccionChanged) {
+      console.info("[triggerService] outbound sent after rehydrate", {
+        correlationId,
+        previousFlowType,
+        previousTipoAccion,
+        currentTipoAccionRaw,
+        currentTipoAccionNormalized,
+        flowTypeRecomputed,
+        staleFlowStateCleared,
+        sentSid
+      });
+    }
 
     await logActivity({
       correlationId,
-      paciente: record.nombre,
-      telefono: record.telefono,
+      paciente: currentRecord.nombre,
+      telefono: currentRecord.telefono,
       accion: "whatsapp_sent",
       resultado: "ok",
       detalle: `Mensaje enviado por Twilio (${sentSid}).`
