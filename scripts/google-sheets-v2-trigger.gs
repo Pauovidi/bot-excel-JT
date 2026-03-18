@@ -83,6 +83,7 @@ function onDemoV2Edit(e) {
     console.log('[AppsScript] row valid', DEMO_V2_CONFIG.monitoredRow);
     console.log('[AppsScript] baseline phone/date/action', baseline ? JSON.stringify(baseline) : 'null');
     console.log('[AppsScript] current phone/date/action', JSON.stringify(snapshot));
+    console.log('[AppsScript] current tipo_accion', snapshot.actionType);
     console.log('[AppsScript] phone changed', phoneChanged);
     console.log('[AppsScript] date changed', dateChanged);
     console.log('[AppsScript] action changed', actionChanged);
@@ -119,8 +120,8 @@ function onDemoV2Edit(e) {
       return;
     }
 
-    const payload = JSON.parse(responseText || '{}');
-    const reason = payload && payload.result ? payload.result.reason : '';
+    const responsePayload = JSON.parse(responseText || '{}');
+    const reason = responsePayload && responsePayload.result ? responsePayload.result.reason : '';
     if (reason === 'processed' || reason === 'duplicate') {
       writeDemoV2Baseline(sheetName, snapshot);
       console.log('[AppsScript] baseline updated', sheetName);

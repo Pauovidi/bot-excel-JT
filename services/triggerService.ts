@@ -348,6 +348,10 @@ export async function processDemoV2SheetEdit(input: {
     date: triggerDate,
     action: currentAction
   });
+  console.info("[triggerService] current tipo_accion", {
+    correlationId,
+    value: currentAction
+  });
 
   if (!existing) {
     await updateState((current) => {
@@ -384,6 +388,8 @@ export async function processDemoV2SheetEdit(input: {
   const dateChanged = triggerDate !== baselineDate;
   const actionChanged = currentAction !== baselineAction;
   const observedChanged = previousObservationHash !== observationHash;
+  const birthdayTripleChangeRequired = currentAction === "cumpleanos" && actionChanged;
+  const triggerMode = birthdayTripleChangeRequired ? "birthday_triple" : "standard_double";
 
   console.info("[triggerService] phone changed", {
     correlationId,
@@ -397,6 +403,17 @@ export async function processDemoV2SheetEdit(input: {
     correlationId,
     value: actionChanged
   });
+  console.info("[triggerService] trigger mode selected", {
+    correlationId,
+    mode: triggerMode
+  });
+  if (birthdayTripleChangeRequired) {
+    console.info("[triggerService] birthday triple-change required", {
+      correlationId,
+      baselineAction,
+      currentAction
+    });
+  }
 
   if (!phoneChanged && !dateChanged && !actionChanged) {
     if (observedChanged) {
@@ -432,7 +449,10 @@ export async function processDemoV2SheetEdit(input: {
     } satisfies DemoV2PushResult;
   }
 
-  if (!(phoneChanged && dateChanged && actionChanged)) {
+  const standardDoubleAccepted = !birthdayTripleChangeRequired && phoneChanged && dateChanged;
+  const birthdayTripleAccepted = birthdayTripleChangeRequired && phoneChanged && dateChanged && actionChanged;
+
+  if (!(standardDoubleAccepted || birthdayTripleAccepted)) {
     if (actionChanged && !phoneChanged && !dateChanged) {
       console.info("[triggerService] ignored because only tipo_accion changed", {
         correlationId,
@@ -467,7 +487,12 @@ export async function processDemoV2SheetEdit(input: {
     });
     console.info("[triggerService] skip reason", {
       correlationId,
-      reason: actionChanged && !phoneChanged && !dateChanged ? "only_action_changed" : "partial_triple_change"
+      reason:
+        actionChanged && !phoneChanged && !dateChanged
+          ? "only_action_changed"
+          : birthdayTripleChangeRequired
+            ? "birthday_requires_triple_change"
+            : "standard_requires_double_change"
     });
     return {
       ok: true,
@@ -479,22 +504,36 @@ export async function processDemoV2SheetEdit(input: {
     } satisfies DemoV2PushResult;
   }
 
-  console.info("[triggerService] relevant triple-change detected", {
-    correlationId,
-    sheetName: liveRecord.sheetName,
-    rowNumber: liveRecord.sheetRowNumber,
-    previousPhone: baselinePhone,
-    currentPhone: liveRecord.telefono,
-    previousDate: baselineDate,
-    currentDate: triggerDate,
-    previousAction: baselineAction,
-    currentAction
-  });
-  console.info("[triggerService] triple change accepted", {
-    correlationId,
-    sheetName: liveRecord.sheetName,
-    rowNumber: liveRecord.sheetRowNumber
-  });
+  if (birthdayTripleAccepted) {
+    console.info("[triggerService] relevant triple-change detected", {
+      correlationId,
+      sheetName: liveRecord.sheetName,
+      rowNumber: liveRecord.sheetRowNumber,
+      previousPhone: baselinePhone,
+      currentPhone: liveRecord.telefono,
+      previousDate: baselineDate,
+      currentDate: triggerDate,
+      previousAction: baselineAction,
+      currentAction
+    });
+    console.info("[triggerService] triple change accepted", {
+      correlationId,
+      sheetName: liveRecord.sheetName,
+      rowNumber: liveRecord.sheetRowNumber
+    });
+  } else {
+    console.info("[triggerService] standard double-change accepted", {
+      correlationId,
+      sheetName: liveRecord.sheetName,
+      rowNumber: liveRecord.sheetRowNumber,
+      previousPhone: baselinePhone,
+      currentPhone: liveRecord.telefono,
+      previousDate: baselineDate,
+      currentDate: triggerDate,
+      baselineAction,
+      currentAction
+    });
+  }
 
   const flowDecision = getDemoV2FlowDecision(liveRecord);
   console.info("[triggerService] flow selected from tipo_accion + sheet context", {
