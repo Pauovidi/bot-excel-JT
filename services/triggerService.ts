@@ -274,7 +274,12 @@ async function runTriggerCheck(spreadsheetId?: string) {
     const flowStart = prepareGuidedFlowStart(clearConversationState(normalizedRecord));
     let outboundRecord = flowStart?.record ?? clearConversationState(normalizedRecord);
     const selectedFlowType = flowStart?.record.flowType ?? "";
-    const selectedTemplate = flowStart ? flowStart.record.lastBotMessageType : normalizedTipoAccion;
+    const selectedTemplate =
+      selectedFlowType === "cumpleanos"
+        ? "birthday"
+        : flowStart
+          ? flowStart.record.lastBotMessageType
+          : normalizedTipoAccion;
     const reasonSelected =
       selectedFlowType === "cumpleanos"
         ? "explicit_birthday_tipo_accion"
