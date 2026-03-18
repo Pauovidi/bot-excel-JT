@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 
 import { nowIso } from "@/lib/dateUtils";
-import { applyDemoV2SheetFlow, getDemoV2Config, getDemoV2TriggerDate, isDemoV2SingleRowEnabled } from "@/lib/demoV2";
+import { getDemoV2Config, getDemoV2TriggerDate, isDemoV2SingleRowEnabled, isDemoV2ValidSheet } from "@/lib/demoV2";
 import { buildDemoV2ObservationHash, buildDemoV2RelevantHash, buildTriggerHash, buildTriggerReopenHash } from "@/lib/hash";
-import { normalizeActionTypeValue } from "@/lib/normalization";
+import { normalizeActionTypeValue, normalizeHeaderKey } from "@/lib/normalization";
 import { readState, updateState } from "@/lib/stateStore";
 import { hydrateOpenGuidedFlowRecord, prepareGuidedFlowStart } from "@/services/conversationFlowService";
 import { logActivity } from "@/services/loggerService";
@@ -12,6 +12,7 @@ import {
   getSpreadsheetUrl,
   readAllRowsFromSpreadsheet,
   readRecordByIdFromSpreadsheet,
+  readSheetRowFromSpreadsheet,
   updateRecordInSpreadsheet
 } from "@/services/sheetsService";
 import { sendWhatsApp } from "@/services/twilioService";
@@ -117,6 +118,91 @@ function summarizeDemoV2State(record?: DemoRecord | null) {
   };
 }
 
+function getDemoV2FlowDecision(record: DemoRecord) {
+  const normalizedAction = normalizeActionTypeValue(record.tipoAccion, record.tipoAccion);
+  const normalizedSheet = normalizeHeaderKey(record.sheetName || record.tratamientoRealizado);
+
+  if (normalizedAction === "cumpleanos") {
+    return {
+      normalizedAction,
+      decision: "cumpleanos",
+      normalizedRecord: {
+        ...record,
+        tipoAccion: "cumpleanos",
+        fechaAccion: getDemoV2TriggerDate(record),
+        flowType: ""
+      } satisfies DemoRecord
+    };
+  }
+
+  if (normalizedAction === "promo" && normalizedSheet.includes("implant")) {
+    return {
+      normalizedAction,
+      decision: "implantologia_recuperacion",
+      normalizedRecord: {
+        ...record,
+        tipoAccion: "promo",
+        fechaAccion: getDemoV2TriggerDate(record),
+        flowType: ""
+      } satisfies DemoRecord
+    };
+  }
+
+  if (normalizedAction === "revision" && normalizedSheet.includes("ortodon")) {
+    return {
+      normalizedAction,
+      decision: "revision_ortodoncia",
+      normalizedRecord: {
+        ...record,
+        tipoAccion: "revision",
+        fechaAccion: getDemoV2TriggerDate(record),
+        flowType: ""
+      } satisfies DemoRecord
+    };
+  }
+
+  if (normalizedAction === "revision" && normalizedSheet.includes("limpieza")) {
+    return {
+      normalizedAction,
+      decision: "revision_limpieza_generica",
+      normalizedRecord: {
+        ...record,
+        tipoAccion: "revision",
+        fechaAccion: getDemoV2TriggerDate(record),
+        flowType: ""
+      } satisfies DemoRecord
+    };
+  }
+
+  return {
+    normalizedAction,
+    decision: `generic_${normalizedAction || "revision"}`,
+    normalizedRecord: {
+      ...record,
+      tipoAccion: normalizedAction,
+      fechaAccion: getDemoV2TriggerDate(record),
+      flowType: ""
+    } satisfies DemoRecord
+  };
+}
+
+type DemoV2PushResult = {
+  ok: boolean;
+  reason:
+    | "processed"
+    | "sheet_not_allowed"
+    | "row_not_allowed"
+    | "record_not_found"
+    | "only_phone_changed"
+    | "only_date_changed"
+    | "non_relevant_change"
+    | "duplicate";
+  changed: number;
+  sent: number;
+  sheetName: string;
+  rowNumber: number;
+};
+
 export async function syncStateFromSheets(spreadsheetId?: string) {
   const state = await readState();
   const sheetRecords = (await readAllRowsFromSpreadsheet(spreadsheetId)).map(hydrateOpenGuidedFlowRecord);
@@ -143,306 +229,382 @@ export async function syncStateFromSheets(spreadsheetId?: string) {
   });
 }
 
-async function runDemoV2TriggerCheck(spreadsheetId?: string) {
-  const correlationId = randomUUID().slice(0, 8);
+export async function processDemoV2SheetEdit(input: {
+  spreadsheetId?: string;
+  sheetName: string;
+  rowNumber: number;
+  correlationId?: string;
+}) {
+  const correlationId = input.correlationId || randomUUID().slice(0, 8);
   const config = getDemoV2Config();
-  const state = await readState();
-  const sheetRecords = await readAllRowsFromSpreadsheet(spreadsheetId);
-  const orderedRecords = config.validSheetNames.flatMap((sheetName) =>
-    sheetRecords
-      .filter((record) => record.sheetName === sheetName)
-      .sort((left, right) => left.sheetRowNumber - right.sheetRowNumber)
-  );
-  const trackedRecords = [...state.records];
-  let processedCount = 0;
-  let sentCount = 0;
 
-  console.info("[triggerService] v2 single-row mode enabled", {
+  console.info("[triggerService] v2 push trigger received", {
     correlationId,
-    validSheets: config.validSheetNames,
+    sheetName: input.sheetName,
+    rowNumber: input.rowNumber,
     rowLocked: config.rowIndex
   });
 
-  async function persistTrackedRecord(record: DemoRecord) {
+  if (!isDemoV2ValidSheet(input.sheetName)) {
+    console.info("[triggerService] ignored push event unsupported sheet", {
+      correlationId,
+      sheetName: input.sheetName
+    });
+    return {
+      ok: true,
+      reason: "sheet_not_allowed",
+      changed: 0,
+      sent: 0,
+      sheetName: input.sheetName,
+      rowNumber: input.rowNumber
+    } satisfies DemoV2PushResult;
+  }
+
+  if (input.rowNumber !== config.rowIndex) {
+    console.info("[triggerService] ignored row because not row 2", {
+      correlationId,
+      sheetName: input.sheetName,
+      rowNumber: input.rowNumber,
+      rowLocked: config.rowIndex
+    });
+    return {
+      ok: true,
+      reason: "row_not_allowed",
+      changed: 0,
+      sent: 0,
+      sheetName: input.sheetName,
+      rowNumber: input.rowNumber
+    } satisfies DemoV2PushResult;
+  }
+
+  const liveRecord = await readSheetRowFromSpreadsheet(input.sheetName, input.rowNumber, input.spreadsheetId);
+  if (!liveRecord) {
+    console.info("[triggerService] ignored push event missing row", {
+      correlationId,
+      sheetName: input.sheetName,
+      rowNumber: input.rowNumber
+    });
+    return {
+      ok: true,
+      reason: "record_not_found",
+      changed: 0,
+      sent: 0,
+      sheetName: input.sheetName,
+      rowNumber: input.rowNumber
+    } satisfies DemoV2PushResult;
+  }
+
+  const state = await readState();
+  const existing =
+    state.records.find((item) => item.id === liveRecord.id) ??
+    state.records.find(
+      (item) => item.sheetName === liveRecord.sheetName && item.sheetRowNumber === liveRecord.sheetRowNumber
+    ) ??
+    null;
+  const triggerDate = getDemoV2TriggerDate(liveRecord);
+  const relevantHash = buildDemoV2RelevantHash(liveRecord.telefono, triggerDate);
+  const observationHash = buildDemoV2ObservationHash(liveRecord);
+  const previousObservationHash = existing ? existing.lastObservedHash ?? buildDemoV2ObservationHash(existing) : "";
+  const baselinePhone = existing?.v2TriggerPhone ?? existing?.telefono ?? liveRecord.telefono;
+  const baselineDate = existing?.v2TriggerDate ?? getDemoV2TriggerDate(existing ?? liveRecord);
+  const trackedRecord = {
+    ...liveRecord,
+    lastObservedHash: observationHash,
+    lastProcessedHash: existing?.lastProcessedHash ?? relevantHash,
+    v2TriggerPhone: existing?.v2TriggerPhone ?? baselinePhone,
+    v2TriggerDate: existing?.v2TriggerDate ?? baselineDate
+  } satisfies DemoRecord;
+
+  console.info("[triggerService] sheet detected", {
+    correlationId,
+    sheetName: liveRecord.sheetName,
+    rowNumber: liveRecord.sheetRowNumber
+  });
+  console.info("[triggerService] row locked = 2", {
+    correlationId,
+    sheetName: liveRecord.sheetName,
+    rowLocked: config.rowIndex
+  });
+
+  if (!existing) {
     await updateState((current) => {
-      upsertRecord(current.records, record);
+      upsertRecord(current.records, {
+        ...trackedRecord,
+        lastProcessedHash: relevantHash,
+        v2TriggerPhone: liveRecord.telefono,
+        v2TriggerDate: triggerDate
+      });
       current.steps.trigger_detected = "done";
     });
 
-    upsertRecord(trackedRecords, record);
+    console.info("[triggerService] outbound skipped no relevant double-change", {
+      correlationId,
+      reason: "initial_baseline_seeded",
+      sheetName: liveRecord.sheetName
+    });
+    return {
+      ok: true,
+      reason: "duplicate",
+      changed: 0,
+      sent: 0,
+      sheetName: liveRecord.sheetName,
+      rowNumber: liveRecord.sheetRowNumber
+    } satisfies DemoV2PushResult;
   }
 
-  for (const record of orderedRecords) {
-    const existing =
-      trackedRecords.find((item) => item.id === record.id) ??
-      trackedRecords.find(
-        (item) => item.sheetName === record.sheetName && item.sheetRowNumber === record.sheetRowNumber
-      ) ??
-      null;
-    const triggerDate = getDemoV2TriggerDate(record);
-    const baselinePhone = existing?.v2TriggerPhone ?? existing?.telefono ?? record.telefono;
-    const baselineDate = existing?.v2TriggerDate ?? getDemoV2TriggerDate(existing ?? record);
-    const relevantHash = buildDemoV2RelevantHash(record.telefono, triggerDate);
-    const observationHash = buildDemoV2ObservationHash(record);
-    const previousObservationHash = existing ? existing.lastObservedHash ?? buildDemoV2ObservationHash(existing) : "";
-    const trackedRecord = {
-      ...record,
-      lastObservedHash: observationHash,
-      lastProcessedHash: existing?.lastProcessedHash ?? relevantHash,
-      v2TriggerPhone: existing?.v2TriggerPhone ?? baselinePhone,
-      v2TriggerDate: existing?.v2TriggerDate ?? baselineDate
-    } satisfies DemoRecord;
+  const phoneChanged = liveRecord.telefono !== baselinePhone;
+  const dateChanged = triggerDate !== baselineDate;
+  const observedChanged = previousObservationHash !== observationHash;
 
-    console.info("[triggerService] sheet detected", {
-      correlationId,
-      sheetName: record.sheetName,
-      rowNumber: record.sheetRowNumber
-    });
-
-    if (record.sheetRowNumber !== config.rowIndex) {
-      if (previousObservationHash !== observationHash) {
-        console.info("[triggerService] ignored row because not row 2", {
-          correlationId,
-          sheetName: record.sheetName,
-          rowNumber: record.sheetRowNumber,
-          rowLocked: config.rowIndex
-        });
-        await persistTrackedRecord(trackedRecord);
-        processedCount += 1;
-      }
-      continue;
-    }
-
-    console.info("[triggerService] row locked = 2", {
-      correlationId,
-      sheetName: record.sheetName,
-      rowLocked: config.rowIndex
-    });
-
-    if (!existing) {
-      await persistTrackedRecord({
-        ...trackedRecord,
-        lastProcessedHash: relevantHash,
-        v2TriggerPhone: record.telefono,
-        v2TriggerDate: triggerDate
-      });
-      continue;
-    }
-
-    const phoneChanged = record.telefono !== baselinePhone;
-    const dateChanged = triggerDate !== baselineDate;
-    const observedChanged = previousObservationHash !== observationHash;
-
-    if (!phoneChanged && !dateChanged) {
-      if (observedChanged) {
-        console.info("[triggerService] ignored non-relevant change", {
-          correlationId,
-          sheetName: record.sheetName,
-          rowNumber: record.sheetRowNumber,
-          before: summarizeDemoV2State(existing),
-          after: summarizeDemoV2State(trackedRecord)
-        });
-        console.info("[triggerService] outbound skipped no relevant double-change", {
-          correlationId,
-          sheetName: record.sheetName,
-          phoneChanged,
-          dateChanged
-        });
-        await persistTrackedRecord(trackedRecord);
-        processedCount += 1;
-      }
-      continue;
-    }
-
-    if (phoneChanged !== dateChanged) {
-      console.info(
-        phoneChanged
-          ? "[triggerService] ignored because only phone changed"
-          : "[triggerService] ignored because only date changed",
-        {
-          correlationId,
-          sheetName: record.sheetName,
-          rowNumber: record.sheetRowNumber,
-          baselinePhone,
-          currentPhone: record.telefono,
-          baselineDate,
-          currentDate: triggerDate
-        }
-      );
-      console.info("[triggerService] outbound skipped no relevant double-change", {
-        correlationId,
-        sheetName: record.sheetName,
-        phoneChanged,
-        dateChanged
-      });
-      await persistTrackedRecord(trackedRecord);
-      processedCount += 1;
-      continue;
-    }
-
-    const appliedFlow = applyDemoV2SheetFlow(record);
-    if (!appliedFlow) {
+  if (!phoneChanged && !dateChanged) {
+    if (observedChanged) {
       console.info("[triggerService] ignored non-relevant change", {
         correlationId,
-        reason: "sheet_without_v2_flow_mapping",
-        sheetName: record.sheetName
+        sheetName: liveRecord.sheetName,
+        rowNumber: liveRecord.sheetRowNumber,
+        before: summarizeDemoV2State(existing),
+        after: summarizeDemoV2State(trackedRecord)
       });
-      await persistTrackedRecord(trackedRecord);
-      processedCount += 1;
-      continue;
-    }
-
-    console.info("[triggerService] relevant double-change detected", {
-      correlationId,
-      sheetName: record.sheetName,
-      rowNumber: record.sheetRowNumber,
-      previousPhone: baselinePhone,
-      currentPhone: record.telefono,
-      previousDate: baselineDate,
-      currentDate: triggerDate
-    });
-    console.info("[triggerService] flow selected from sheet", {
-      correlationId,
-      sheetName: record.sheetName,
-      selectedFlow: appliedFlow.config.selectedFlowLabel
-    });
-
-    const outboundBase = clearConversationState({
-      ...appliedFlow.record,
-      flowType: ""
-    });
-    const flowStart = prepareGuidedFlowStart(outboundBase);
-    let outboundRecord = flowStart?.record ?? outboundBase;
-    const selectedFlowType = flowStart?.record.flowType ?? appliedFlow.config.flowType;
-    const selectedTemplate = flowStart?.record.lastBotMessageType ?? appliedFlow.record.tipoAccion;
-    const reasonSelected = `sheet:${record.sheetName}`;
-
-    console.info("[triggerService] outbound flow candidate", {
-      correlationId,
-      selectedFlowType,
-      selectedTemplate,
-      reasonSelected,
-      sheetStateBefore: summarizeDemoV2State(existing)
-    });
-
-    let sentBody = "";
-    let sentSid = "";
-    try {
-      const sent = await sendWhatsApp(outboundRecord, {
-        body: flowStart?.message,
-        mediaUrl: flowStart?.mediaUrl
-      });
-      sentBody = sent.body;
-      sentSid = sent.sid;
-      sentCount += 1;
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : "No se pudo enviar el WhatsApp por Twilio.";
-      const failedRecord = {
-        ...outboundRecord,
-        estadoWhatsapp: "error" as const,
-        lastObservedHash: observationHash,
-        lastProcessedHash: relevantHash,
-        v2TriggerPhone: record.telefono,
-        v2TriggerDate: triggerDate,
-        updatedAtDemo: nowIso()
-      } satisfies DemoRecord;
-
       await updateState((current) => {
-        upsertRecord(current.records, failedRecord);
+        upsertRecord(current.records, trackedRecord);
         current.steps.trigger_detected = "done";
-        current.steps.whatsapp_sent = "error";
       });
-
-      upsertRecord(trackedRecords, failedRecord);
-
-      await updateRecordInSpreadsheet(failedRecord, spreadsheetId);
-      await logActivity({
+    } else {
+      console.info("[triggerService] outbound skipped no relevant double-change", {
         correlationId,
-        paciente: record.nombre,
-        telefono: record.telefono,
-        accion: "whatsapp_error",
-        resultado: "error",
-        detalle: errorMessage
+        reason: "duplicate_pair",
+        sheetName: liveRecord.sheetName
       });
-      processedCount += 1;
-      break;
     }
+    return {
+      ok: true,
+      reason: observedChanged ? "non_relevant_change" : "duplicate",
+      changed: observedChanged ? 1 : 0,
+      sent: 0,
+      sheetName: liveRecord.sheetName,
+      rowNumber: liveRecord.sheetRowNumber
+    } satisfies DemoV2PushResult;
+  }
 
-    const updatedRecord = {
+  if (phoneChanged !== dateChanged) {
+    console.info(
+      phoneChanged
+        ? "[triggerService] ignored because only phone changed"
+        : "[triggerService] ignored because only date changed",
+      {
+        correlationId,
+        sheetName: liveRecord.sheetName,
+        rowNumber: liveRecord.sheetRowNumber,
+        baselinePhone,
+        currentPhone: liveRecord.telefono,
+        baselineDate,
+        currentDate: triggerDate
+      }
+    );
+    await updateState((current) => {
+      upsertRecord(current.records, trackedRecord);
+      current.steps.trigger_detected = "done";
+    });
+    console.info("[triggerService] outbound skipped no relevant double-change", {
+      correlationId,
+      sheetName: liveRecord.sheetName,
+      phoneChanged,
+      dateChanged
+    });
+    return {
+      ok: true,
+      reason: phoneChanged ? "only_phone_changed" : "only_date_changed",
+      changed: 1,
+      sent: 0,
+      sheetName: liveRecord.sheetName,
+      rowNumber: liveRecord.sheetRowNumber
+    } satisfies DemoV2PushResult;
+  }
+
+  console.info("[triggerService] relevant double-change detected", {
+    correlationId,
+    sheetName: liveRecord.sheetName,
+    rowNumber: liveRecord.sheetRowNumber,
+    previousPhone: baselinePhone,
+    currentPhone: liveRecord.telefono,
+    previousDate: baselineDate,
+    currentDate: triggerDate
+  });
+
+  const flowDecision = getDemoV2FlowDecision(liveRecord);
+  console.info("[triggerService] flow selected from tipo_accion + sheet context", {
+    correlationId,
+    sheetName: liveRecord.sheetName,
+    tipoAccion: liveRecord.tipoAccion,
+    decision: flowDecision.decision
+  });
+
+  const outboundBase = clearConversationState({
+    ...flowDecision.normalizedRecord,
+    flowType: ""
+  });
+  const flowStart = prepareGuidedFlowStart(outboundBase);
+  const outboundRecord = flowStart?.record ?? outboundBase;
+
+  if (shouldSkipTrigger(outboundRecord)) {
+    await updateState((current) => {
+      upsertRecord(current.records, {
+        ...trackedRecord,
+        updatedAtDemo: nowIso()
+      });
+      current.steps.trigger_detected = "done";
+    });
+    console.info("[triggerService] outbound skipped no relevant double-change", {
+      correlationId,
+      reason: "validation_or_missing_date",
+      sheetName: liveRecord.sheetName
+    });
+    return {
+      ok: true,
+      reason: "non_relevant_change",
+      changed: 1,
+      sent: 0,
+      sheetName: liveRecord.sheetName,
+      rowNumber: liveRecord.sheetRowNumber
+    } satisfies DemoV2PushResult;
+  }
+
+  let sentBody = "";
+  let sentSid = "";
+  try {
+    const sent = await sendWhatsApp(outboundRecord, {
+      body: flowStart?.message,
+      mediaUrl: flowStart?.mediaUrl
+    });
+    sentBody = sent.body;
+    sentSid = sent.sid;
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "No se pudo enviar el WhatsApp por Twilio.";
+    const failedRecord = {
       ...outboundRecord,
-      estadoWhatsapp: "enviado" as const,
-      ultimaRespuesta: "",
-      intencion: "" as const,
-      lastUserMessage: "",
-      intentDetected: "",
-      selectedSlot: "",
-      conversationClosed: false,
-      lastSentMessage: sentBody,
+      estadoWhatsapp: "error" as const,
       lastObservedHash: observationHash,
       lastProcessedHash: relevantHash,
-      v2TriggerPhone: record.telefono,
+      v2TriggerPhone: liveRecord.telefono,
       v2TriggerDate: triggerDate,
       updatedAtDemo: nowIso()
     } satisfies DemoRecord;
 
     await updateState((current) => {
-      upsertRecord(current.records, updatedRecord);
+      upsertRecord(current.records, failedRecord);
       current.steps.trigger_detected = "done";
-      current.steps.whatsapp_sent = "done";
+      current.steps.whatsapp_sent = "error";
     });
-
-    upsertRecord(trackedRecords, updatedRecord);
-
-    try {
-      await updateRecordInSpreadsheet(updatedRecord, spreadsheetId);
-    } catch (error) {
-      console.warn("[triggerService] could not sync outbound WhatsApp state to Google Sheets", error);
-    }
-
-    console.info("[triggerService] outbound sent in v2", {
-      correlationId,
-      sentSid,
-      sheetName: record.sheetName,
-      rowNumber: record.sheetRowNumber,
-      sheetStateAfter: summarizeDemoV2State(updatedRecord)
-    });
-
+    await updateRecordInSpreadsheet(failedRecord, input.spreadsheetId);
     await logActivity({
       correlationId,
-      paciente: record.nombre,
-      telefono: record.telefono,
-      accion: "trigger_detected_v2",
-      resultado: "ok",
-      detalle: `Cambio doble detectado en fila ${config.rowIndex} de ${record.sheetName}.`
+      paciente: liveRecord.nombre,
+      telefono: liveRecord.telefono,
+      accion: "whatsapp_error",
+      resultado: "error",
+      detalle: errorMessage
     });
+    throw error;
+  }
+
+  const updatedRecord = {
+    ...outboundRecord,
+    estadoWhatsapp: "enviado" as const,
+    ultimaRespuesta: "",
+    intencion: "" as const,
+    lastUserMessage: "",
+    intentDetected: "",
+    selectedSlot: "",
+    conversationClosed: false,
+    lastSentMessage: sentBody,
+    lastObservedHash: observationHash,
+    lastProcessedHash: relevantHash,
+    v2TriggerPhone: liveRecord.telefono,
+    v2TriggerDate: triggerDate,
+    updatedAtDemo: nowIso()
+  } satisfies DemoRecord;
+
+  await updateState((current) => {
+    upsertRecord(current.records, updatedRecord);
+    current.steps.trigger_detected = "done";
+    current.steps.whatsapp_sent = "done";
+  });
+
+  try {
+    await updateRecordInSpreadsheet(updatedRecord, input.spreadsheetId);
+  } catch (error) {
+    console.warn("[triggerService] could not sync outbound WhatsApp state to Google Sheets", error);
+  }
+
+  console.info("[triggerService] outbound sent in v2", {
+    correlationId,
+    sentSid,
+    sheetName: liveRecord.sheetName,
+    rowNumber: liveRecord.sheetRowNumber,
+    flowDecision: flowDecision.decision,
+    sheetStateAfter: summarizeDemoV2State(updatedRecord)
+  });
+
+  await logActivity({
+    correlationId,
+    paciente: liveRecord.nombre,
+    telefono: liveRecord.telefono,
+    accion: "trigger_detected_v2",
+    resultado: "ok",
+    detalle: `Push de Google Sheets aceptado para ${liveRecord.sheetName} fila ${config.rowIndex}.`
+  });
+  await logActivity({
+    correlationId,
+    paciente: liveRecord.nombre,
+    telefono: liveRecord.telefono,
+    accion: "whatsapp_sent",
+    resultado: "ok",
+    detalle: `Mensaje enviado por Twilio (${sentSid}) en modo v2 push.`
+  });
+
+  for (const flowLog of flowStart?.logs ?? []) {
     await logActivity({
       correlationId,
-      paciente: record.nombre,
-      telefono: record.telefono,
-      accion: "whatsapp_sent",
-      resultado: "ok",
-      detalle: `Mensaje enviado por Twilio (${sentSid}) en modo v2.`
+      paciente: liveRecord.nombre,
+      telefono: liveRecord.telefono,
+      accion: flowLog.accion,
+      resultado: flowLog.resultado,
+      detalle: flowLog.detalle
     });
-
-    for (const flowLog of flowStart?.logs ?? []) {
-      await logActivity({
-        correlationId,
-        paciente: record.nombre,
-        telefono: record.telefono,
-        accion: flowLog.accion,
-        resultado: flowLog.resultado,
-        detalle: flowLog.detalle
-      });
-    }
-
-    processedCount += 1;
-    break;
   }
 
   return {
-    changed: processedCount,
-    sent: sentCount
+    ok: true,
+    reason: "processed",
+    changed: 1,
+    sent: 1,
+    sheetName: liveRecord.sheetName,
+    rowNumber: liveRecord.sheetRowNumber
+  } satisfies DemoV2PushResult;
+}
+
+async function runDemoV2TriggerCheck(spreadsheetId?: string) {
+  const config = getDemoV2Config();
+
+  for (const sheetName of config.validSheetNames) {
+    const result = await processDemoV2SheetEdit({
+      spreadsheetId,
+      sheetName,
+      rowNumber: config.rowIndex
+    });
+
+    if (result.sent > 0) {
+      return {
+        changed: result.changed,
+        sent: result.sent
+      };
+    }
+  }
+
+  return {
+    changed: 0,
+    sent: 0
   };
 }
 

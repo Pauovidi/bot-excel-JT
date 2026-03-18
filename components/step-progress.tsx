@@ -40,7 +40,7 @@ export function StepProgress({ state, autoCheckEnabled, demoV2 }: StepProgressPr
         </div>
         <p className="rounded-full border border-white/70 bg-white/80 px-4 py-2 text-xs text-ink/70">
           {demoV2.enabled
-            ? `Modo v2 automático · fila ${demoV2.rowIndex}`
+            ? `Modo v2 push por edición de Sheets · fila ${demoV2.rowIndex}`
             : autoCheckEnabled
               ? "Auto-check activo cada 30s"
               : "Modo manual · sin auto-check"}

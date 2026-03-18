@@ -452,6 +452,41 @@ export async function readRecordByIdFromSpreadsheet(recordId: string, spreadshee
   return records.find((record) => record.id === recordId) ?? null;
 }
 
+export async function readSheetRowFromSpreadsheet(
+  sheetName: string,
+  rowNumber: number,
+  spreadsheetIdOverride?: string
+) {
+  const state = await readState();
+  const spreadsheetId =
+    process.env.GOOGLE_SPREADSHEET_ID?.trim() || spreadsheetIdOverride || state.spreadsheetId;
+  if (!spreadsheetId) {
+    return null;
+  }
+
+  const sheets = getSheetsClient();
+  const [headerResponse, rowResponse] = await Promise.all([
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName}'!1:1`
+    }),
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName}'!${rowNumber}:${rowNumber}`
+    })
+  ]);
+  const headers = (headerResponse.data.values?.[0] ?? []).map((value) => String(value));
+  const row = (rowResponse.data.values?.[0] ?? []).map((value) => String(value ?? ""));
+  if (headers.length === 0 || row.length === 0) {
+    return null;
+  }
+
+  const id = row[headers.indexOf("id_registro")] ?? "";
+  const existing = state.records.find((record) => record.id === id);
+  const record = sheetRowToRecord(headers, row, sheetName, rowNumber, existing);
+  return record.id ? record : null;
+}
+
 export function buildReconstructedImportSummary(records: DemoRecord[]) {
   return buildImportSummaryFromRecords(records, "Reconstruido desde Google Sheets");
 }

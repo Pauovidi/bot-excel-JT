@@ -148,7 +148,7 @@ export function DemoDashboard({ demoV2 }: { demoV2: DemoV2ClientConfig }) {
   }, [demoV2.enabled]);
 
   useEffect(() => {
-    if (!autoCheckEnabled || !state.spreadsheetId || isBusy) {
+    if (demoV2.enabled || !autoCheckEnabled || !state.spreadsheetId || isBusy) {
       return;
     }
 
@@ -402,6 +402,19 @@ export function DemoDashboard({ demoV2 }: { demoV2: DemoV2ClientConfig }) {
             <div className="mt-5 rounded-2xl border border-white/70 bg-white/80 p-4 text-sm text-ink/75">
               {notice}
             </div>
+            {demoV2.enabled ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="rounded-full border border-mint bg-mint/20 px-3 py-1 text-xs font-semibold text-teal">
+                  V2 automática por edición de Google Sheets
+                </span>
+                <span className="rounded-full border border-white/70 bg-white/80 px-3 py-1 text-xs font-semibold text-ink/70">
+                  Fila monitorizada: {demoV2.rowIndex}
+                </span>
+                <span className="rounded-full border border-white/70 bg-white/80 px-3 py-1 text-xs font-semibold text-ink/70">
+                  Hojas activas: {demoV2.validSheetNames.join(", ")}
+                </span>
+              </div>
+            ) : null}
           </div>
         </div>
       </section>
