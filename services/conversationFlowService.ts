@@ -79,6 +79,21 @@ function hasAny(text: string, candidates: string[]) {
   return candidates.some((candidate) => hasTokenSequence(text, candidate));
 }
 
+function logInboundIntent(record: DemoRecord, flowType: FlowType, intent: string, branch: string) {
+  console.info("[conversationFlowService] inbound intent parsed", {
+    recordId: record.id,
+    flowType,
+    conversationState: record.conversationState,
+    intent
+  });
+  console.info("[conversationFlowService] inbound branch selected", {
+    recordId: record.id,
+    flowType,
+    conversationState: record.conversationState,
+    branch
+  });
+}
+
 function matchesConversationRejection(message: string) {
   const normalized = normalizeMessage(message);
   return (
@@ -504,7 +519,42 @@ function matchesRevisionAcceptance(message: string) {
     "agendemos una cita",
     "si agendemos una cita",
     "sí agendemos una cita",
+    "quiero cita",
     "cita"
+  ]);
+}
+
+function matchesImplantPainSignal(message: string) {
+  return hasAny(message, [
+    "tengo molestia",
+    "molestia",
+    "molestias",
+    "me molesta",
+    "sigo con molestias",
+    "tengo dolor",
+    "dolor",
+    "me duele",
+    "me da problemas",
+    "me ha dado problemas",
+    "problemas"
+  ]);
+}
+
+function matchesImplantObjection(message: string) {
+  return hasAny(message, [
+    "lo fui dejando por precio",
+    "por precio",
+    "me echo para atras el precio",
+    "me echó para atrás el precio",
+    "es caro",
+    "precio",
+    "dinero",
+    "miedo",
+    "lo fui dejando",
+    "dejando",
+    "tiempo",
+    "objecion",
+    "duda"
   ]);
 }
 
@@ -521,6 +571,13 @@ async function confirmSlot(
   };
   const eventId = await createConversationCalendarEvent(scheduledRecord, {
     summary: getSummaryForFlow(record.flowType, record)
+  });
+  console.info("[conversationFlowService] calendar step reached", {
+    recordId: record.id,
+    flowType: record.flowType,
+    conversationState,
+    slot: slot.label,
+    calendarEventId: eventId
   });
 
   return {
@@ -540,6 +597,12 @@ export async function progressGuidedFlow(
   }
 
   const normalized = normalizeMessage(inboundMessage);
+  console.info("[conversationFlowService] inbound text normalized", {
+    recordId: record.id,
+    flowType: activeFlowType || "simple_intent",
+    conversationState: record.conversationState,
+    normalizedText: normalized
+  });
   const withInbound = {
     ...record,
     flowType: activeFlowType,
@@ -561,6 +624,7 @@ export async function progressGuidedFlow(
   }
 
   if (matchesConversationRejection(normalized)) {
+    logInboundIntent(record, activeFlowType, "rechazo", "closed");
     return {
       record: withClosedConversation(
         {
@@ -585,6 +649,7 @@ export async function progressGuidedFlow(
 
   if (activeFlowType === "cumpleanos") {
     if (record.conversationState === "birthday_offer_sent" && wantsBirthdayBooking(normalized)) {
+      logInboundIntent(record, activeFlowType, "pedir_cita", "birthday_waiting_week");
       return {
         record: {
           ...withInbound,
@@ -617,6 +682,12 @@ export async function progressGuidedFlow(
 
       if (wantsThisWeek || wantsNextWeek) {
         const slots = wantsThisWeek ? buildBirthdayThisWeekSlots() : buildBirthdayNextWeekSlots();
+        logInboundIntent(
+          record,
+          activeFlowType,
+          wantsThisWeek ? "esta_semana" : "proxima",
+          "birthday_waiting_slot"
+        );
         return {
           record: {
             ...withInbound,
@@ -655,6 +726,7 @@ export async function progressGuidedFlow(
     if (record.conversationState === "birthday_waiting_slot") {
       const selectedSlot = resolveSelectedSlot(record, inboundMessage);
       if (selectedSlot) {
+        logInboundIntent(record, activeFlowType, normalizeMessage(selectedSlot.label), "birthday_confirmed");
         const updated = await confirmSlot(
           {
             ...withInbound,
@@ -691,10 +763,8 @@ export async function progressGuidedFlow(
   }
 
   if (activeFlowType === "implantologia_recuperacion") {
-    if (
-      record.conversationState === "implant_followup_sent" &&
-      hasAny(normalized, ["molestia", "molestias", "dolor", "me duele", "me molesta", "me ha dado problemas"])
-    ) {
+    if (record.conversationState === "implant_followup_sent" && matchesImplantPainSignal(normalized)) {
+      logInboundIntent(record, activeFlowType, "molestia", "implant_waiting_reason");
       return {
         record: {
           ...withInbound,
@@ -723,10 +793,8 @@ En su momento parecía algo que convenía tratar, pero también sabemos que con 
       };
     }
 
-    if (
-      record.conversationState === "implant_waiting_reason" &&
-      hasAny(normalized, ["objecion", "duda", "precio", "dinero", "miedo", "lo fui dejando", "dejando", "tiempo"])
-    ) {
+    if (record.conversationState === "implant_waiting_reason" && matchesImplantObjection(normalized)) {
+      logInboundIntent(record, activeFlowType, "objecion", "implant_waiting_acceptance");
       return {
         record: {
           ...withInbound,
@@ -757,10 +825,8 @@ Por eso lo más recomendable es hacer una revisión rápida para ver cómo está
       };
     }
 
-    if (
-      record.conversationState === "implant_waiting_acceptance" &&
-      hasAny(normalized, ["si", "sí", "vale", "ok", "de acuerdo", "quiero", "me va bien", "acepto", "agendemos", "cita"])
-    ) {
+    if (record.conversationState === "implant_waiting_acceptance" && matchesRevisionAcceptance(normalized)) {
+      logInboundIntent(record, activeFlowType, "acepta_revision", "implant_waiting_slot");
       const slots = buildClinicReviewSlots();
       return {
         record: {
@@ -801,6 +867,7 @@ Te propongo dos opciones:
     if (record.conversationState === "implant_waiting_slot") {
       const selectedSlot = resolveSelectedSlot(record, inboundMessage);
       if (selectedSlot) {
+        logInboundIntent(record, activeFlowType, normalizeMessage(selectedSlot.label), "implant_confirmed");
         const updated = await confirmSlot(
           {
             ...withInbound,
@@ -837,22 +904,11 @@ Te propongo dos opciones:
   }
 
   if (activeFlowType === "revision_ortodoncia") {
-    const currentStep = record.conversationState || "revision_ortodoncia";
-
     if (
       record.conversationState === "ortho_review_sent" &&
       matchesRevisionChangeSignal(normalized)
     ) {
-      console.info("[conversationFlowService] revision intent parsed", {
-        recordId: record.id,
-        step: currentStep,
-        intent: "cambios"
-      });
-      console.info("[conversationFlowService] revision branch selected", {
-        recordId: record.id,
-        step: currentStep,
-        branch: "ortho_waiting_adherence"
-      });
+      logInboundIntent(record, activeFlowType, "cambios", "ortho_waiting_adherence");
       return {
         record: {
           ...withInbound,
@@ -885,16 +941,7 @@ Esa revisión era importante para asegurarnos de que el movimiento de los diente
       record.conversationState === "ortho_waiting_adherence" &&
       matchesRevisionAdherenceIssue(normalized)
     ) {
-      console.info("[conversationFlowService] revision intent parsed", {
-        recordId: record.id,
-        step: currentStep,
-        intent: "mala_adherencia"
-      });
-      console.info("[conversationFlowService] revision branch selected", {
-        recordId: record.id,
-        step: currentStep,
-        branch: "ortho_waiting_acceptance"
-      });
+      logInboundIntent(record, activeFlowType, "mala_adherencia", "ortho_waiting_acceptance");
       return {
         record: {
           ...withInbound,
@@ -929,16 +976,7 @@ Para quedarnos tranquilos, lo ideal sería verte unos minutos y revisar cómo es
       record.conversationState === "ortho_waiting_acceptance" &&
       matchesRevisionAcceptance(normalized)
     ) {
-      console.info("[conversationFlowService] revision intent parsed", {
-        recordId: record.id,
-        step: currentStep,
-        intent: "acepta_revision"
-      });
-      console.info("[conversationFlowService] revision branch selected", {
-        recordId: record.id,
-        step: currentStep,
-        branch: "ortho_waiting_slot"
-      });
+      logInboundIntent(record, activeFlowType, "acepta_revision", "ortho_waiting_slot");
       const slots = buildClinicReviewSlots();
       return {
         record: {
@@ -979,16 +1017,7 @@ Te propongo dos opciones:
     if (record.conversationState === "ortho_waiting_slot") {
       const selectedSlot = resolveSelectedSlot(record, inboundMessage);
       if (selectedSlot) {
-        console.info("[conversationFlowService] revision intent parsed", {
-          recordId: record.id,
-          step: currentStep,
-          intent: normalizeMessage(selectedSlot.label)
-        });
-        console.info("[conversationFlowService] revision branch selected", {
-          recordId: record.id,
-          step: currentStep,
-          branch: "ortho_confirmed"
-        });
+        logInboundIntent(record, activeFlowType, normalizeMessage(selectedSlot.label), "ortho_confirmed");
         const updated = await confirmSlot(
           {
             ...withInbound,
@@ -1022,14 +1051,15 @@ Te propongo dos opciones:
         };
       }
     }
-
-    console.info("[conversationFlowService] revision fallback used", {
-      recordId: record.id,
-      step: currentStep,
-      inboundMessage,
-      normalizedInbound: normalized
-    });
   }
+
+  console.info("[conversationFlowService] fallback used", {
+    recordId: record.id,
+    flowType: activeFlowType,
+    conversationState: record.conversationState,
+    inboundMessage,
+    normalizedInbound: normalized
+  });
 
   return {
     record: withInbound,

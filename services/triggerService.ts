@@ -638,6 +638,18 @@ export async function processDemoV2SheetEdit(input: {
     current.steps.trigger_detected = "done";
     current.steps.whatsapp_sent = "done";
   });
+  console.info("[triggerService] outbound flow persisted", {
+    correlationId,
+    value: updatedRecord.flowType,
+    sheetName: updatedRecord.sheetName,
+    rowNumber: updatedRecord.sheetRowNumber
+  });
+  console.info("[triggerService] outbound conversationState persisted", {
+    correlationId,
+    value: updatedRecord.conversationState,
+    sheetName: updatedRecord.sheetName,
+    rowNumber: updatedRecord.sheetRowNumber
+  });
 
   try {
     await updateRecordInSpreadsheet(updatedRecord, input.spreadsheetId);
@@ -1049,6 +1061,18 @@ async function runTriggerCheck(spreadsheetId?: string) {
       upsertRecord(current.records, updatedRecord);
       current.steps.trigger_detected = "done";
       current.steps.whatsapp_sent = "done";
+    });
+    console.info("[triggerService] outbound flow persisted", {
+      correlationId,
+      value: updatedRecord.flowType,
+      sheetName: updatedRecord.sheetName,
+      rowNumber: updatedRecord.sheetRowNumber
+    });
+    console.info("[triggerService] outbound conversationState persisted", {
+      correlationId,
+      value: updatedRecord.conversationState,
+      sheetName: updatedRecord.sheetName,
+      rowNumber: updatedRecord.sheetRowNumber
     });
 
     try {

@@ -55,6 +55,91 @@ function summarizeSheetState(record?: DemoRecord | null) {
   };
 }
 
+function buildInboundRecordKey(record: DemoRecord) {
+  return record.id || `${record.sheetName}:${record.sheetRowNumber}`;
+}
+
+function scoreInboundCandidate(record: DemoRecord) {
+  let score = 0;
+
+  if (record.flowType) {
+    score += 100;
+  }
+  if (record.conversationState) {
+    score += 40;
+  }
+  if (!record.conversationClosed) {
+    score += 30;
+  }
+  if (record.estadoWhatsapp === "enviado") {
+    score += 20;
+  }
+  if (record.lastSentMessage) {
+    score += 10;
+  }
+
+  return score;
+}
+
+function summarizeInboundCandidate(record: DemoRecord) {
+  return {
+    id: record.id,
+    sheetName: record.sheetName,
+    sheetRowNumber: record.sheetRowNumber,
+    flowType: record.flowType,
+    conversationState: record.conversationState,
+    estadoWhatsapp: record.estadoWhatsapp,
+    conversationClosed: record.conversationClosed,
+    updatedAtDemo: record.updatedAtDemo
+  };
+}
+
+function resolveInboundRecord(stateRecords: DemoRecord[], sheetRecords: DemoRecord[], phone: string) {
+  const matchesByKey = new Map<string, DemoRecord>();
+
+  for (const record of sheetRecords) {
+    if (toComparablePhone(record.telefono) !== phone) {
+      continue;
+    }
+
+    matchesByKey.set(buildInboundRecordKey(record), record);
+  }
+
+  for (const record of stateRecords) {
+    if (toComparablePhone(record.telefono) !== phone) {
+      continue;
+    }
+
+    const key = buildInboundRecordKey(record);
+    const existing = matchesByKey.get(key);
+    matchesByKey.set(
+      key,
+      existing
+        ? ({
+            ...existing,
+            ...record
+          } satisfies DemoRecord)
+        : record
+    );
+  }
+
+  const candidates = Array.from(matchesByKey.values())
+    .map((record) => hydrateOpenGuidedFlowRecord(record))
+    .sort((left, right) => {
+      const scoreDiff = scoreInboundCandidate(right) - scoreInboundCandidate(left);
+      if (scoreDiff !== 0) {
+        return scoreDiff;
+      }
+
+      return Date.parse(right.updatedAtDemo || "") - Date.parse(left.updatedAtDemo || "");
+    });
+
+  return {
+    record: candidates[0] ?? null,
+    candidates: candidates.map(summarizeInboundCandidate)
+  };
+}
+
 function validateTwilioRequest(request: Request, params: Record<string, string>) {
   const signature = request.headers.get("x-twilio-signature");
   if (!signature) {
@@ -154,14 +239,14 @@ export async function POST(request: Request) {
       normalizedPhone: phone
     });
     const state = await readState();
-    const foundRecord =
-      state.records.find((item) => toComparablePhone(item.telefono) === phone) ??
-      (await readAllRowsFromSpreadsheet()).find((item) => toComparablePhone(item.telefono) === phone);
-    const record = foundRecord ? hydrateOpenGuidedFlowRecord(foundRecord) : null;
+    const sheetRecords = await readAllRowsFromSpreadsheet();
+    const inboundSelection = resolveInboundRecord(state.records, sheetRecords, phone);
+    const record = inboundSelection.record;
 
     console.info("[twilio-webhook] patient found", {
       correlationId,
       found: Boolean(record),
+      candidates: inboundSelection.candidates,
       sheetStateBefore: summarizeSheetState(record)
     });
 
@@ -182,6 +267,14 @@ export async function POST(request: Request) {
       open: !record.conversationClosed,
       flowType: record.flowType,
       conversationState: record.conversationState
+    });
+    console.info("[twilio-webhook] inbound flowType loaded", {
+      correlationId,
+      value: record.flowType || "simple_intent"
+    });
+    console.info("[twilio-webhook] inbound conversationState loaded", {
+      correlationId,
+      value: record.conversationState || ""
     });
 
     await logActivity({
@@ -221,6 +314,15 @@ export async function POST(request: Request) {
             correlationId,
             sheetStateAfter: summarizeSheetState(updatedRecord)
           });
+          if (progressed.calendarUpdated || updatedRecord.calendarEventId) {
+            console.info("[twilio-webhook] calendar step reached", {
+              correlationId,
+              flowType: updatedRecord.flowType,
+              conversationState: updatedRecord.conversationState,
+              calendarEventId: updatedRecord.calendarEventId,
+              selectedSlot: updatedRecord.selectedSlot
+            });
+          }
 
           try {
             await updateRecordInSpreadsheet(updatedRecord);
