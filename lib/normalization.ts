@@ -83,8 +83,10 @@ export function normalizeActionTypeValue(value: unknown, fallback: ActionType = 
 
   switch (normalized) {
     case "cumpleanos":
+    case "cumple anos":
       return "cumpleanos";
     case "recordatorio":
+    case "recordatorio cita":
       return "recordatorio";
     case "promo":
       return "promo";

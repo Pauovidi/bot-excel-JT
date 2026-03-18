@@ -2,13 +2,24 @@ import { NextResponse } from "next/server";
 
 import { getCalendarUrl } from "@/lib/calendarUrl";
 import { getInitialDemoState, readState } from "@/lib/stateStore";
+import { syncStateFromSheets } from "@/services/triggerService";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const state = await readState();
+    let state = await readState();
+    const configuredSpreadsheetId = process.env.GOOGLE_SPREADSHEET_ID?.trim();
+
+    if (
+      configuredSpreadsheetId &&
+      (!state.spreadsheetId || !state.importSummary || state.records.length === 0)
+    ) {
+      await syncStateFromSheets(configuredSpreadsheetId);
+      state = await readState();
+    }
+
     return NextResponse.json({
       ok: true,
       state,
