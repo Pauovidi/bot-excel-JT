@@ -33,8 +33,55 @@ function normalizeMessage(message: string) {
   return stripAccents(message).toLowerCase().trim().replace(/\s+/g, " ");
 }
 
+function tokenizeMessage(message: string) {
+  return normalizeMessage(message)
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function hasTokenSequence(text: string, candidate: string) {
+  const textTokens = tokenizeMessage(text);
+  const candidateTokens = tokenizeMessage(candidate);
+
+  if (candidateTokens.length === 0 || candidateTokens.length > textTokens.length) {
+    return false;
+  }
+
+  for (let start = 0; start <= textTokens.length - candidateTokens.length; start += 1) {
+    let matches = true;
+    for (let index = 0; index < candidateTokens.length; index += 1) {
+      if (textTokens[start + index] !== candidateTokens[index]) {
+        matches = false;
+        break;
+      }
+    }
+
+    if (matches) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function hasAny(text: string, candidates: string[]) {
-  return candidates.some((candidate) => text === candidate || text.includes(candidate));
+  return candidates.some((candidate) => hasTokenSequence(text, candidate));
+}
+
+function matchesConversationRejection(message: string) {
+  const normalized = normalizeMessage(message);
+  return (
+    normalized === "no" ||
+    hasAny(normalized, [
+      "no gracias",
+      "ahora no",
+      "otro momento",
+      "mas tarde",
+      "más tarde",
+      "prefiero no",
+      "de momento no"
+    ])
+  );
 }
 
 function serializeSlot(slot: SlotOption) {
@@ -354,6 +401,64 @@ function wantsBirthdayBooking(message: string) {
   ]);
 }
 
+function matchesRevisionChangeSignal(message: string) {
+  return hasAny(message, [
+    "he notado cambios",
+    "noto cambios",
+    "si he notado cambios",
+    "sí he notado cambios",
+    "he notado algo",
+    "si noto cambios",
+    "sí noto cambios",
+    "cambios",
+    "han cambiado",
+    "se han movido",
+    "noto movimiento",
+    "los alineadores han cambiado",
+    "los dientes se han movido",
+    "cambio",
+    "movimiento",
+    "mueve",
+    "alineadores",
+    "dientes"
+  ]);
+}
+
+function matchesRevisionAdherenceIssue(message: string) {
+  return hasAny(message, [
+    "no mucho",
+    "un poco",
+    "si un poco",
+    "sí un poco",
+    "algo",
+    "bastante",
+    "no demasiado",
+    "regular",
+    "mal",
+    "poco",
+    "a veces",
+    "me ha costado"
+  ]);
+}
+
+function matchesRevisionAcceptance(message: string) {
+  return hasAny(message, [
+    "si",
+    "sí",
+    "vale",
+    "ok",
+    "de acuerdo",
+    "quiero",
+    "me va bien",
+    "acepto",
+    "agendemos",
+    "agendemos una cita",
+    "si agendemos una cita",
+    "sí agendemos una cita",
+    "cita"
+  ]);
+}
+
 async function confirmSlot(
   record: DemoRecord,
   slot: SlotOption,
@@ -394,7 +499,19 @@ export async function progressGuidedFlow(
     updatedAtDemo: nowIso()
   } satisfies DemoRecord;
 
-  if (hasAny(normalized, ["no", "no gracias", "ahora no", "otro momento", "mas tarde", "más tarde"])) {
+  if (activeFlowType === "revision_ortodoncia") {
+    console.info("[conversationFlowService] revision inbound received", {
+      recordId: record.id,
+      inboundMessage,
+      normalizedInbound: normalized
+    });
+    console.info("[conversationFlowService] revision step current", {
+      recordId: record.id,
+      conversationState: record.conversationState
+    });
+  }
+
+  if (matchesConversationRejection(normalized)) {
     return {
       record: withClosedConversation(
         {
@@ -671,10 +788,22 @@ Te propongo dos opciones:
   }
 
   if (activeFlowType === "revision_ortodoncia") {
+    const currentStep = record.conversationState || "revision_ortodoncia";
+
     if (
       record.conversationState === "ortho_review_sent" &&
-      hasAny(normalized, ["cambios", "cambio", "movimiento", "mueve", "alineadores", "dientes"])
+      matchesRevisionChangeSignal(normalized)
     ) {
+      console.info("[conversationFlowService] revision intent parsed", {
+        recordId: record.id,
+        step: currentStep,
+        intent: "cambios"
+      });
+      console.info("[conversationFlowService] revision branch selected", {
+        recordId: record.id,
+        step: currentStep,
+        branch: "ortho_waiting_adherence"
+      });
       return {
         record: {
           ...withInbound,
@@ -705,8 +834,18 @@ Esa revisión era importante para asegurarnos de que el movimiento de los diente
 
     if (
       record.conversationState === "ortho_waiting_adherence" &&
-      hasAny(normalized, ["no mucho", "no demasiado", "regular", "mal", "poco", "a veces", "me ha costado"])
+      matchesRevisionAdherenceIssue(normalized)
     ) {
+      console.info("[conversationFlowService] revision intent parsed", {
+        recordId: record.id,
+        step: currentStep,
+        intent: "mala_adherencia"
+      });
+      console.info("[conversationFlowService] revision branch selected", {
+        recordId: record.id,
+        step: currentStep,
+        branch: "ortho_waiting_acceptance"
+      });
       return {
         record: {
           ...withInbound,
@@ -739,8 +878,18 @@ Para quedarnos tranquilos, lo ideal sería verte unos minutos y revisar cómo es
 
     if (
       record.conversationState === "ortho_waiting_acceptance" &&
-      hasAny(normalized, ["si", "sí", "vale", "ok", "de acuerdo", "quiero", "me va bien", "acepto", "agendemos", "cita"])
+      matchesRevisionAcceptance(normalized)
     ) {
+      console.info("[conversationFlowService] revision intent parsed", {
+        recordId: record.id,
+        step: currentStep,
+        intent: "acepta_revision"
+      });
+      console.info("[conversationFlowService] revision branch selected", {
+        recordId: record.id,
+        step: currentStep,
+        branch: "ortho_waiting_slot"
+      });
       const slots = buildClinicReviewSlots();
       return {
         record: {
@@ -781,6 +930,16 @@ Te propongo dos opciones:
     if (record.conversationState === "ortho_waiting_slot") {
       const selectedSlot = resolveSelectedSlot(record, inboundMessage);
       if (selectedSlot) {
+        console.info("[conversationFlowService] revision intent parsed", {
+          recordId: record.id,
+          step: currentStep,
+          intent: normalizeMessage(selectedSlot.label)
+        });
+        console.info("[conversationFlowService] revision branch selected", {
+          recordId: record.id,
+          step: currentStep,
+          branch: "ortho_confirmed"
+        });
         const updated = await confirmSlot(
           {
             ...withInbound,
@@ -814,12 +973,28 @@ Te propongo dos opciones:
         };
       }
     }
+
+    console.info("[conversationFlowService] revision fallback used", {
+      recordId: record.id,
+      step: currentStep,
+      inboundMessage,
+      normalizedInbound: normalized
+    });
   }
 
   return {
     record: withInbound,
     replyMessage: "Perfecto. Si te parece, responde con una de las opciones que te acabo de indicar y seguimos.",
     logs: [
+      ...(activeFlowType === "revision_ortodoncia"
+        ? [
+            {
+              accion: "revision_fallback_used",
+              resultado: record.conversationState || activeFlowType,
+              detalle: "El mensaje no encajó con el paso actual del flujo de revisión de ortodoncia."
+            }
+          ]
+        : []),
       {
         accion: "flow_step_unmatched",
         resultado: record.conversationState || activeFlowType,
