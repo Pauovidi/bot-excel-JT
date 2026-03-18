@@ -2,10 +2,16 @@ import { randomUUID } from "node:crypto";
 
 import { nowIso } from "@/lib/dateUtils";
 import { buildTriggerHash, buildTriggerReopenHash } from "@/lib/hash";
+import { normalizeActionTypeValue } from "@/lib/normalization";
 import { readState, updateState } from "@/lib/stateStore";
 import { hydrateOpenGuidedFlowRecord, prepareGuidedFlowStart } from "@/services/conversationFlowService";
 import { logActivity } from "@/services/loggerService";
-import { readAllRowsFromSpreadsheet, updateRecordInSpreadsheet } from "@/services/sheetsService";
+import {
+  buildReconstructedImportSummary,
+  getSpreadsheetUrl,
+  readAllRowsFromSpreadsheet,
+  updateRecordInSpreadsheet
+} from "@/services/sheetsService";
 import { sendWhatsApp } from "@/services/twilioService";
 import type { DemoRecord } from "@/types/demo";
 
@@ -92,12 +98,21 @@ export async function syncStateFromSheets(spreadsheetId?: string) {
     return state;
   }
 
+  const resolvedSpreadsheetId =
+    spreadsheetId || process.env.GOOGLE_SPREADSHEET_ID?.trim() || state.spreadsheetId;
+  const spreadsheetUrl = resolvedSpreadsheetId ? await getSpreadsheetUrl(resolvedSpreadsheetId) : state.spreadsheetUrl;
+  const importSummary = state.importSummary ?? buildReconstructedImportSummary(sheetRecords);
+
   return updateState((current) => {
     const merged = [...current.records];
     for (const record of sheetRecords) {
       upsertRecord(merged, record);
     }
     current.records = merged;
+    current.spreadsheetId = resolvedSpreadsheetId || current.spreadsheetId;
+    current.spreadsheetUrl = spreadsheetUrl || current.spreadsheetUrl;
+    current.importSummary = current.importSummary ?? importSummary;
+    current.uploadedFilePath = current.uploadedFilePath || "reconstructed:google-sheets";
   });
 }
 
@@ -251,8 +266,30 @@ async function runTriggerCheck(spreadsheetId?: string) {
       continue;
     }
 
-    const flowStart = prepareGuidedFlowStart(clearConversationState(record));
-    let outboundRecord = flowStart?.record ?? clearConversationState(record);
+    const normalizedTipoAccion = normalizeActionTypeValue(record.tipoAccion, record.tipoAccion);
+    const normalizedRecord = {
+      ...record,
+      tipoAccion: normalizedTipoAccion
+    } satisfies DemoRecord;
+    const flowStart = prepareGuidedFlowStart(clearConversationState(normalizedRecord));
+    let outboundRecord = flowStart?.record ?? clearConversationState(normalizedRecord);
+    const selectedFlowType = flowStart?.record.flowType ?? "";
+    const selectedTemplate = flowStart ? flowStart.record.lastBotMessageType : normalizedTipoAccion;
+    const reasonSelected =
+      selectedFlowType === "cumpleanos"
+        ? "explicit_birthday_tipo_accion"
+        : flowStart
+          ? "heuristic_guided_flow"
+          : "generic_template_from_tipo_accion";
+
+    console.info("[triggerService] outbound flow candidate", {
+      correlationId,
+      normalizedTipoAccion,
+      selectedFlowType,
+      selectedTemplate,
+      reasonSelected,
+      sheetStateBefore: summarizeSheetState(latestRecord)
+    });
     let sentBody = "";
     let sentSid = "";
     try {

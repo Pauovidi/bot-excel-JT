@@ -58,9 +58,10 @@ export function DemoDashboard() {
 
   const hasSpreadsheetUrl = Boolean(state.spreadsheetUrl?.trim());
   const hasCalendarUrl = Boolean(calendarUrl.trim());
-  const hasUploadedExcel = Boolean(state.importSummary && state.uploadedFilePath);
+  const hasUploadedExcel = Boolean(state.importSummary && (state.uploadedFilePath || state.records.length > 0));
   const hasPendingSelection = Boolean(selectedFile);
   const isBusy = activeOperation !== "idle";
+  const canRebuildFromSheets = Boolean(state.spreadsheetId || hasSpreadsheetUrl);
   const fileTitle = hasPendingSelection
     ? "Archivo seleccionado"
     : hasUploadedExcel
@@ -74,8 +75,12 @@ export function DemoDashboard() {
   const defaultNotice = hasPendingSelection
     ? "Archivo seleccionado. Pulsa “Procesar Excel” para cargarlo."
     : hasUploadedExcel
-      ? "Excel procesado correctamente. Ya puedes crear Sheets."
-      : "Selecciona un Excel para continuar.";
+      ? state.uploadedFilePath?.startsWith("reconstructed:")
+        ? "Estado reconstruido desde Google Sheets. Ya puedes comprobar cambios o seguir la demo."
+        : "Excel procesado correctamente. Ya puedes crear Sheets."
+      : canRebuildFromSheets
+        ? "No hay parseo en memoria. Usa “Simular refresco de estado” para reconstruir desde Google Sheets."
+        : "Selecciona un Excel para continuar.";
   const notice = feedback ?? defaultNotice;
 
   const clearSelectedFileState = useCallback(() => {
@@ -465,7 +470,9 @@ export function DemoDashboard() {
               </div>
             ) : (
               <div className="mt-6 rounded-2xl border border-dashed border-sand bg-white/70 p-5 text-sm text-ink/70">
-                Aún no hay parseo disponible. Puedes usar tu Excel real o el archivo de ejemplo incluido en el workspace.
+                {canRebuildFromSheets
+                  ? "Aún no hay parseo disponible en memoria. Puedes reconstruir el estado desde Google Sheets con “Simular refresco de estado” o volver a subir el Excel."
+                  : "Aún no hay parseo disponible. Puedes usar tu Excel real o el archivo de ejemplo incluido en el workspace."}
               </div>
             )}
           </div>

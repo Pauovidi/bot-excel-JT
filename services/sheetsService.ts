@@ -13,7 +13,7 @@ import { normalizePhoneForStorage } from "@/lib/phone";
 import { readState, updateState } from "@/lib/stateStore";
 import { createGoogleAuth } from "@/services/googleAuth";
 import { logActivity } from "@/services/loggerService";
-import type { DemoRecord } from "@/types/demo";
+import type { DemoRecord, ImportSummary } from "@/types/demo";
 
 const SHEETS_SCOPES = [
   "https://www.googleapis.com/auth/spreadsheets",
@@ -49,6 +49,26 @@ function buildSheetHeaders(records: DemoRecord[]) {
     new Set(records.flatMap((record) => Object.keys(record.originalData)))
   );
   return [...importedHeaders, ...TECHNICAL_COLUMNS];
+}
+
+function buildImportSummaryFromRecords(records: DemoRecord[], fileName: string): ImportSummary {
+  const groupCounts = records.reduce<Record<string, number>>((accumulator, record) => {
+    const key = record.tratamientoRealizado || "Sin tratamiento";
+    accumulator[key] = (accumulator[key] ?? 0) + 1;
+    return accumulator;
+  }, {});
+  const originalHeaders = Array.from(new Set(records.flatMap((record) => Object.keys(record.originalData))));
+
+  return {
+    fileName,
+    uploadedAt: nowIso(),
+    totalRows: records.length,
+    totalGroups: Object.keys(groupCounts).length,
+    groupCounts,
+    originalHeaders,
+    mappedHeaders: {},
+    validationErrors: records.filter((record) => record.validationErrors.length > 0).length
+  };
 }
 
 function recordToRow(record: DemoRecord, headers: string[]) {
@@ -195,6 +215,11 @@ export async function getOrCreateSpreadsheet(preferredSpreadsheetId?: string) {
     spreadsheetUrl:
       created.data.spreadsheetUrl ?? `https://docs.google.com/spreadsheets/d/${newSpreadsheetId}/edit`
   };
+}
+
+export async function getSpreadsheetUrl(spreadsheetIdOverride?: string) {
+  const { spreadsheetUrl } = await getOrCreateSpreadsheet(spreadsheetIdOverride);
+  return spreadsheetUrl;
 }
 
 async function ensureSheetsExist(spreadsheetId: string, sheetNames: string[]) {
@@ -417,6 +442,10 @@ export async function readAllRowsFromSpreadsheet(spreadsheetIdOverride?: string)
   }
 
   return records;
+}
+
+export function buildReconstructedImportSummary(records: DemoRecord[]) {
+  return buildImportSummaryFromRecords(records, "Reconstruido desde Google Sheets");
 }
 
 export async function updateRecordInSpreadsheet(record: DemoRecord, spreadsheetIdOverride?: string) {
