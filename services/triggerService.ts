@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { nowIso } from "@/lib/dateUtils";
 import { buildTriggerHash, buildTriggerReopenHash } from "@/lib/hash";
 import { readState, updateState } from "@/lib/stateStore";
-import { prepareGuidedFlowStart } from "@/services/conversationFlowService";
+import { hydrateOpenGuidedFlowRecord, prepareGuidedFlowStart } from "@/services/conversationFlowService";
 import { logActivity } from "@/services/loggerService";
 import { readAllRowsFromSpreadsheet, updateRecordInSpreadsheet } from "@/services/sheetsService";
 import { sendWhatsApp } from "@/services/twilioService";
@@ -23,6 +23,20 @@ function shouldSkipTrigger(record: DemoRecord) {
 
 function isConversationClosed(record: DemoRecord) {
   return CLOSED_WHATSAPP_STATUSES.has(record.estadoWhatsapp);
+}
+
+function isConversationOpen(record: DemoRecord) {
+  if (record.conversationClosed) {
+    return false;
+  }
+
+  return (
+    record.estadoWhatsapp === "enviado" ||
+    Boolean(record.flowType) ||
+    Boolean(record.conversationState) ||
+    Boolean(record.lastBotMessageType) ||
+    Boolean(record.lastSentMessage)
+  );
 }
 
 function clearConversationState(record: DemoRecord) {
@@ -52,9 +66,27 @@ function upsertRecord(records: DemoRecord[], record: DemoRecord) {
   records.push(record);
 }
 
+function summarizeSheetState(record?: DemoRecord | null) {
+  if (!record) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    estadoWhatsapp: record.estadoWhatsapp,
+    conversationClosed: record.conversationClosed,
+    flowType: record.flowType,
+    conversationState: record.conversationState,
+    tipoAccion: record.tipoAccion,
+    fechaAccion: record.fechaAccion,
+    horaCita: record.horaCita,
+    lastProcessedHash: record.lastProcessedHash
+  };
+}
+
 export async function syncStateFromSheets(spreadsheetId?: string) {
   const state = await readState();
-  const sheetRecords = await readAllRowsFromSpreadsheet(spreadsheetId);
+  const sheetRecords = (await readAllRowsFromSpreadsheet(spreadsheetId)).map(hydrateOpenGuidedFlowRecord);
 
   if (sheetRecords.length === 0) {
     return state;
@@ -72,14 +104,14 @@ export async function syncStateFromSheets(spreadsheetId?: string) {
 async function runTriggerCheck(spreadsheetId?: string) {
   const correlationId = randomUUID().slice(0, 8);
   const state = await readState();
-  const sheetRecords = await readAllRowsFromSpreadsheet(spreadsheetId);
+  const sheetRecords = (await readAllRowsFromSpreadsheet(spreadsheetId)).map(hydrateOpenGuidedFlowRecord);
   const changed = sheetRecords
     .map((record) => {
       const existing = state.records.find((item) => item.id === record.id);
-      const merged = {
-        ...(existing ?? record),
+      const merged = hydrateOpenGuidedFlowRecord({
+        ...(existing ? hydrateOpenGuidedFlowRecord(existing) : record),
         ...record
-      };
+      });
       const currentHash = buildTriggerHash(merged);
       const previousHash = existing?.lastProcessedHash || record.lastProcessedHash;
       if (currentHash === previousHash) {
@@ -97,29 +129,51 @@ async function runTriggerCheck(spreadsheetId?: string) {
 
   for (const record of changed) {
     const latestState = await readState();
-    const latestRecord =
+    const latestRecord = hydrateOpenGuidedFlowRecord(
       latestState.records.find((item) => item.id === record.id) ??
-      sheetRecords.find((item) => item.id === record.id);
+        sheetRecords.find((item) => item.id === record.id) ??
+        record
+    );
     if (latestRecord?.lastProcessedHash === record.lastProcessedHash) {
       continue;
     }
 
     const reopenedHashChanged =
       buildTriggerReopenHash(latestRecord ?? record) !== buildTriggerReopenHash(record);
+    const openConversation = latestRecord ? isConversationOpen(latestRecord) : false;
     const closedConversation = latestRecord
       ? latestRecord.conversationClosed || isConversationClosed(latestRecord)
       : false;
 
-    if (closedConversation && !reopenedHashChanged) {
+    console.info("[triggerService] outbound candidate", {
+      correlationId,
+      reopenedHashChanged,
+      openConversation,
+      closedConversation,
+      sheetStateBefore: summarizeSheetState(latestRecord),
+      sheetStateAfter: summarizeSheetState(record)
+    });
+
+    if ((openConversation || closedConversation) && !reopenedHashChanged) {
       const preservedRecord = latestRecord ?? record;
       const skippedRecord = {
         ...record,
         estadoWhatsapp: preservedRecord.estadoWhatsapp,
         ultimaRespuesta: preservedRecord.ultimaRespuesta,
         intencion: preservedRecord.intencion,
+        flowType: preservedRecord.flowType,
+        conversationState: preservedRecord.conversationState,
+        lastBotMessageType: preservedRecord.lastBotMessageType,
+        lastUserMessage: preservedRecord.lastUserMessage,
+        intentDetected: preservedRecord.intentDetected,
+        proposedSlots: preservedRecord.proposedSlots,
+        selectedSlot: preservedRecord.selectedSlot,
+        conversationClosed: preservedRecord.conversationClosed,
         calendarEventId: preservedRecord.calendarEventId,
+        lastSentMessage: preservedRecord.lastSentMessage,
+        lastProcessedHash: record.lastProcessedHash,
         updatedAtDemo: nowIso()
-      };
+      } satisfies DemoRecord;
 
       await updateState((current) => {
         upsertRecord(current.records, skippedRecord);
@@ -127,19 +181,30 @@ async function runTriggerCheck(spreadsheetId?: string) {
       });
 
       await updateRecordInSpreadsheet(skippedRecord, spreadsheetId);
+
+      console.info("[triggerService] outbound skipped reason", {
+        correlationId,
+        reason: openConversation ? "conversation_already_open" : "conversation_already_closed",
+        reopenedHashChanged,
+        sheetStateBefore: summarizeSheetState(latestRecord),
+        sheetStateAfter: summarizeSheetState(skippedRecord)
+      });
+
       await logActivity({
         correlationId,
         paciente: record.nombre,
         telefono: record.telefono,
-        accion: "trigger_skipped_already_closed",
+        accion: openConversation ? "trigger_skipped_open_conversation" : "trigger_skipped_already_closed",
         resultado: "ok",
-        detalle: "La conversación ya estaba cerrada y no hubo un cambio nuevo en tipo, fecha u hora."
+        detalle: openConversation
+          ? "La conversación ya estaba abierta y no hubo cambio en tipo_accion, fecha_accion u hora_cita."
+          : "La conversación ya estaba cerrada y no hubo cambio en tipo_accion, fecha_accion u hora_cita."
       });
       processedCount += 1;
       continue;
     }
 
-    if (closedConversation && reopenedHashChanged) {
+    if ((openConversation || closedConversation) && reopenedHashChanged) {
       await logActivity({
         correlationId,
         paciente: record.nombre,
@@ -169,6 +234,12 @@ async function runTriggerCheck(spreadsheetId?: string) {
         current.steps.trigger_detected = "done";
       });
       await updateRecordInSpreadsheet(record, spreadsheetId);
+      console.info("[triggerService] outbound skipped reason", {
+        correlationId,
+        reason: "missing_date_or_validation",
+        sheetStateBefore: summarizeSheetState(latestRecord),
+        sheetStateAfter: summarizeSheetState(record)
+      });
       await logActivity({
         correlationId,
         paciente: record.nombre,
@@ -242,6 +313,13 @@ async function runTriggerCheck(spreadsheetId?: string) {
     } catch (error) {
       console.warn("[triggerService] could not sync outbound WhatsApp state to Google Sheets", error);
     }
+
+    console.info("[triggerService] outbound sent", {
+      correlationId,
+      sentSid,
+      sheetStateBefore: summarizeSheetState(latestRecord),
+      sheetStateAfter: summarizeSheetState(updatedRecord)
+    });
 
     await logActivity({
       correlationId,

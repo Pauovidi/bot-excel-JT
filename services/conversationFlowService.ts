@@ -132,6 +132,32 @@ function getSummaryForFlow(flowType: FlowType, record: DemoRecord) {
   }
 }
 
+function getInitialConversationState(flowType: FlowType): ConversationState {
+  switch (flowType) {
+    case "cumpleanos":
+      return "birthday_offer_sent";
+    case "implantologia_recuperacion":
+      return "implant_followup_sent";
+    case "revision_ortodoncia":
+      return "ortho_review_sent";
+    default:
+      return "";
+  }
+}
+
+function getInitialBotMessageType(flowType: FlowType) {
+  switch (flowType) {
+    case "cumpleanos":
+      return "birthday_initial";
+    case "implantologia_recuperacion":
+      return "implant_initial";
+    case "revision_ortodoncia":
+      return "ortho_initial";
+    default:
+      return "";
+  }
+}
+
 function withClosedConversation(
   record: DemoRecord,
   status: DemoRecord["estadoWhatsapp"],
@@ -275,6 +301,39 @@ Solo quería asegurarme de que todo sigue bien y que no has notado cambios en el
   };
 }
 
+export function hydrateOpenGuidedFlowRecord(record: DemoRecord) {
+  if (record.conversationClosed || record.estadoWhatsapp !== "enviado") {
+    return record;
+  }
+
+  if (record.flowType && record.conversationState) {
+    return record;
+  }
+
+  const flowType = resolveFlowType(record);
+  if (!flowType) {
+    return record;
+  }
+
+  return {
+    ...record,
+    flowType: record.flowType || flowType,
+    conversationState: record.conversationState || getInitialConversationState(flowType),
+    lastBotMessageType: record.lastBotMessageType || getInitialBotMessageType(flowType)
+  } satisfies DemoRecord;
+}
+
+function wantsBirthdayBooking(message: string) {
+  return hasAny(message, [
+    "pedir cita",
+    "quiero pedir cita",
+    "quiero cita",
+    "reservar",
+    "reservar cita",
+    "agendar cita"
+  ]);
+}
+
 async function confirmSlot(
   record: DemoRecord,
   slot: SlotOption,
@@ -339,7 +398,7 @@ export async function progressGuidedFlow(
   }
 
   if (activeFlowType === "cumpleanos") {
-    if (record.conversationState === "birthday_offer_sent" && normalized.includes("pedir cita")) {
+    if (record.conversationState === "birthday_offer_sent" && wantsBirthdayBooking(normalized)) {
       return {
         record: {
           ...withInbound,
