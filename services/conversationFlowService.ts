@@ -306,20 +306,40 @@ export function hydrateOpenGuidedFlowRecord(record: DemoRecord) {
     return record;
   }
 
-  if (record.flowType && record.conversationState) {
-    return record;
-  }
-
   const flowType = resolveFlowType(record);
   if (!flowType) {
-    return record;
+    if (!record.flowType && !record.conversationState && !record.lastBotMessageType) {
+      return record;
+    }
+
+    return {
+      ...record,
+      flowType: "",
+      conversationState: "",
+      lastBotMessageType: "",
+      lastUserMessage: "",
+      intentDetected: "",
+      proposedSlots: [],
+      selectedSlot: ""
+    } satisfies DemoRecord;
+  }
+
+  if (record.flowType === flowType && record.conversationState) {
+    return {
+      ...record,
+      lastBotMessageType: record.lastBotMessageType || getInitialBotMessageType(flowType)
+    } satisfies DemoRecord;
   }
 
   return {
     ...record,
-    flowType: record.flowType || flowType,
-    conversationState: record.conversationState || getInitialConversationState(flowType),
-    lastBotMessageType: record.lastBotMessageType || getInitialBotMessageType(flowType)
+    flowType,
+    conversationState: getInitialConversationState(flowType),
+    lastBotMessageType: getInitialBotMessageType(flowType),
+    lastUserMessage: "",
+    intentDetected: "",
+    proposedSlots: [],
+    selectedSlot: ""
   } satisfies DemoRecord;
 }
 

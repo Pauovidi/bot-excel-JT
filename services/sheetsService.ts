@@ -444,6 +444,11 @@ export async function readAllRowsFromSpreadsheet(spreadsheetIdOverride?: string)
   return records;
 }
 
+export async function readRecordByIdFromSpreadsheet(recordId: string, spreadsheetIdOverride?: string) {
+  const records = await readAllRowsFromSpreadsheet(spreadsheetIdOverride);
+  return records.find((record) => record.id === recordId) ?? null;
+}
+
 export function buildReconstructedImportSummary(records: DemoRecord[]) {
   return buildImportSummaryFromRecords(records, "Reconstruido desde Google Sheets");
 }

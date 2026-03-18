@@ -23,9 +23,10 @@ const statusClasses = {
 
 type StepProgressProps = {
   state: DemoState;
+  autoCheckEnabled: boolean;
 };
 
-export function StepProgress({ state }: StepProgressProps) {
+export function StepProgress({ state, autoCheckEnabled }: StepProgressProps) {
   return (
     <div className="glass-card rounded-[28px] border border-white/60 p-6 shadow-card">
       <div className="mb-5 flex items-center justify-between gap-3">
@@ -34,7 +35,7 @@ export function StepProgress({ state }: StepProgressProps) {
           <h2 className="mt-2 text-2xl text-ink">Flujo de la demo</h2>
         </div>
         <p className="rounded-full border border-white/70 bg-white/80 px-4 py-2 text-xs text-ink/70">
-          Auto-check cada 30s con la app abierta
+          {autoCheckEnabled ? "Auto-check activo cada 30s" : "Modo manual · sin auto-check"}
         </p>
       </div>
 
