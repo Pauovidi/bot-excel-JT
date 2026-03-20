@@ -96,6 +96,10 @@ export type DemoRecord = {
   validationErrors: string[];
   originalData: Record<string, string>;
   lastSentMessage: string;
+  lastObservedHash?: string;
+  v2TriggerPhone?: string;
+  v2TriggerDate?: string;
+  v2TriggerAction?: string;
 };
 
 export type ImportSummary = {

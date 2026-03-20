@@ -152,7 +152,11 @@ function sheetRowToRecord(
     updatedAtDemo: data.updated_at_demo || nowIso(),
     validationErrors: existing?.validationErrors ?? [],
     originalData,
-    lastSentMessage: existing?.lastSentMessage || ""
+    lastSentMessage: existing?.lastSentMessage || "",
+    lastObservedHash: existing?.lastObservedHash,
+    v2TriggerPhone: existing?.v2TriggerPhone,
+    v2TriggerDate: existing?.v2TriggerDate,
+    v2TriggerAction: existing?.v2TriggerAction
   } satisfies DemoRecord;
 }
 
@@ -447,6 +451,41 @@ export async function readAllRowsFromSpreadsheet(spreadsheetIdOverride?: string)
 export async function readRecordByIdFromSpreadsheet(recordId: string, spreadsheetIdOverride?: string) {
   const records = await readAllRowsFromSpreadsheet(spreadsheetIdOverride);
   return records.find((record) => record.id === recordId) ?? null;
+}
+
+export async function readSheetRowFromSpreadsheet(
+  sheetName: string,
+  rowNumber: number,
+  spreadsheetIdOverride?: string
+) {
+  const state = await readState();
+  const spreadsheetId =
+    process.env.GOOGLE_SPREADSHEET_ID?.trim() || spreadsheetIdOverride || state.spreadsheetId;
+  if (!spreadsheetId) {
+    return null;
+  }
+
+  const sheets = getSheetsClient();
+  const [headerResponse, rowResponse] = await Promise.all([
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName}'!1:1`
+    }),
+    sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName}'!${rowNumber}:${rowNumber}`
+    })
+  ]);
+  const headers = (headerResponse.data.values?.[0] ?? []).map((value) => String(value));
+  const row = (rowResponse.data.values?.[0] ?? []).map((value) => String(value ?? ""));
+  if (headers.length === 0 || row.length === 0) {
+    return null;
+  }
+
+  const id = row[headers.indexOf("id_registro")] ?? "";
+  const existing = state.records.find((record) => record.id === id);
+  const record = sheetRowToRecord(headers, row, sheetName, rowNumber, existing);
+  return record.id ? record : null;
 }
 
 export function buildReconstructedImportSummary(records: DemoRecord[]) {

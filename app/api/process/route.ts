@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { getDemoV2TriggerDate, isDemoV2SingleRowEnabled } from "@/lib/demoV2";
 import { logRuntimeEnvDiagnostics } from "@/lib/env";
-import { buildTriggerHash } from "@/lib/hash";
+import { buildDemoV2ObservationHash, buildDemoV2RelevantHash, buildTriggerHash } from "@/lib/hash";
 import { readState, readUploadedExcelBuffer, updateState } from "@/lib/stateStore";
 import { parseExcelBuffer } from "@/services/excelService";
 import { logActivity } from "@/services/loggerService";
@@ -88,10 +89,28 @@ export async function POST(request: Request) {
       );
     }
 
-    const preparedRecords = baseRecords.map((record) => ({
-      ...record,
-      lastProcessedHash: buildTriggerHash(record)
-    }));
+    const preparedRecords = baseRecords.map((record) => {
+      if (isDemoV2SingleRowEnabled()) {
+        const triggerDate = getDemoV2TriggerDate(record);
+        return {
+          ...record,
+          lastProcessedHash: buildDemoV2RelevantHash(record.telefono, triggerDate, record.tipoAccion),
+          lastObservedHash: buildDemoV2ObservationHash(record),
+          v2TriggerPhone: record.telefono,
+          v2TriggerDate: triggerDate,
+          v2TriggerAction: record.tipoAccion
+        };
+      }
+
+      return {
+        ...record,
+        lastProcessedHash: buildTriggerHash(record),
+        lastObservedHash: undefined,
+        v2TriggerPhone: undefined,
+        v2TriggerDate: undefined,
+        v2TriggerAction: undefined
+      };
+    });
     const spreadsheet = await syncRecordsToSpreadsheet(preparedRecords, {
       spreadsheetId: payload.spreadsheetId || state.spreadsheetId
     });
