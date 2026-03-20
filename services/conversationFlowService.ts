@@ -41,12 +41,16 @@ export type FlowSelection = {
 };
 
 function normalizeMessage(message: string) {
-  return stripAccents(message).toLowerCase().trim().replace(/\s+/g, " ");
+  return stripAccents(message)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function tokenizeMessage(message: string) {
   return normalizeMessage(message)
-    .split(/[^a-z0-9]+/)
+    .split(" ")
     .filter(Boolean);
 }
 
@@ -77,6 +81,35 @@ function hasTokenSequence(text: string, candidate: string) {
 
 function hasAny(text: string, candidates: string[]) {
   return candidates.some((candidate) => hasTokenSequence(text, candidate));
+}
+
+function hasTokenFragment(text: string, fragment: string) {
+  const normalizedFragment = normalizeMessage(fragment);
+  if (!normalizedFragment) {
+    return false;
+  }
+
+  return tokenizeMessage(text).some((token) => token.startsWith(normalizedFragment));
+}
+
+function hasKeywordGroup(text: string, fragments: string[]) {
+  return fragments.every((fragment) => hasTokenFragment(text, fragment));
+}
+
+function matchesPhrasesOrKeywords(
+  text: string,
+  options: {
+    phrases?: string[];
+    keywordGroups?: string[][];
+  }
+) {
+  const normalized = normalizeMessage(text);
+  const phraseMatched = options.phrases ? hasAny(normalized, options.phrases) : false;
+  if (phraseMatched) {
+    return true;
+  }
+
+  return options.keywordGroups ? options.keywordGroups.some((group) => hasKeywordGroup(normalized, group)) : false;
 }
 
 function logInboundIntent(record: DemoRecord, flowType: FlowType, intent: string, branch: string) {
@@ -455,107 +488,145 @@ export function hydrateOpenGuidedFlowRecord(record: DemoRecord) {
 }
 
 function wantsBirthdayBooking(message: string) {
-  return hasAny(message, [
-    "pedir cita",
-    "quiero pedir cita",
-    "quiero cita",
-    "reservar",
-    "reservar cita",
-    "agendar cita"
-  ]);
+  return matchesPhrasesOrKeywords(message, {
+    phrases: [
+      "pedir cita",
+      "quiero pedir cita",
+      "quiero cita",
+      "reservar",
+      "reservar cita",
+      "agendar cita"
+    ],
+    keywordGroups: [
+      ["ped", "cit"],
+      ["quier", "ped", "cit"],
+      ["quier", "cit"],
+      ["agend", "cit"],
+      ["reserv", "cit"]
+    ]
+  });
 }
 
 function matchesRevisionChangeSignal(message: string) {
-  return hasAny(message, [
-    "he notado cambios",
-    "noto cambios",
-    "si he notado cambios",
-    "sí he notado cambios",
-    "he notado algo",
-    "si noto cambios",
-    "sí noto cambios",
-    "cambios",
-    "han cambiado",
-    "se han movido",
-    "noto movimiento",
-    "los alineadores han cambiado",
-    "los dientes se han movido",
-    "cambio",
-    "movimiento",
-    "mueve",
-    "alineadores",
-    "dientes"
-  ]);
+  return matchesPhrasesOrKeywords(message, {
+    phrases: [
+      "he notado cambios",
+      "noto cambios",
+      "si he notado cambios",
+      "sí he notado cambios",
+      "he notado algo",
+      "si noto cambios",
+      "sí noto cambios",
+      "han cambiado",
+      "se han movido",
+      "noto movimiento",
+      "los alineadores han cambiado",
+      "los dientes se han movido",
+      "se mueven diferente",
+      "se mueven un poco diferente"
+    ],
+    keywordGroups: [
+      ["not", "cambi"],
+      ["not", "muev"],
+      ["muev", "difer"],
+      ["dient", "muev"],
+      ["alineador", "cambi"]
+    ]
+  });
 }
 
 function matchesRevisionAdherenceIssue(message: string) {
-  return hasAny(message, [
-    "no mucho",
-    "un poco",
-    "si un poco",
-    "sí un poco",
-    "algo",
-    "bastante",
-    "no demasiado",
-    "regular",
-    "mal",
-    "poco",
-    "a veces",
-    "me ha costado"
-  ]);
+  return matchesPhrasesOrKeywords(message, {
+    phrases: [
+      "no mucho",
+      "un poco",
+      "si un poco",
+      "sí un poco",
+      "algo",
+      "bastante",
+      "no demasiado",
+      "regular",
+      "mal",
+      "poco",
+      "a veces",
+      "me ha costado"
+    ],
+    keywordGroups: [["no", "much"], ["un", "poc"], ["alg"]]
+  });
 }
 
 function matchesRevisionAcceptance(message: string) {
-  return hasAny(message, [
-    "si",
-    "sí",
-    "vale",
-    "ok",
-    "de acuerdo",
-    "quiero",
-    "me va bien",
-    "acepto",
-    "agendemos",
-    "agendemos una cita",
-    "si agendemos una cita",
-    "sí agendemos una cita",
-    "quiero cita",
-    "cita"
-  ]);
+  return matchesPhrasesOrKeywords(message, {
+    phrases: [
+      "si",
+      "sí",
+      "vale",
+      "ok",
+      "de acuerdo",
+      "quiero",
+      "me va bien",
+      "acepto",
+      "agendemos",
+      "agendemos una cita",
+      "si agendemos una cita",
+      "sí agendemos una cita",
+      "si claro",
+      "sí claro",
+      "vale si",
+      "vale sí",
+      "quiero cita",
+      "cita"
+    ],
+    keywordGroups: [
+      ["si", "clar"],
+      ["vale", "si"],
+      ["agend"],
+      ["quier", "cit"]
+    ]
+  });
 }
 
 function matchesImplantPainSignal(message: string) {
-  return hasAny(message, [
-    "tengo molestia",
-    "molestia",
-    "molestias",
-    "me molesta",
-    "sigo con molestias",
-    "tengo dolor",
-    "dolor",
-    "me duele",
-    "me da problemas",
-    "me ha dado problemas",
-    "problemas"
-  ]);
+  return matchesPhrasesOrKeywords(message, {
+    phrases: [
+      "tengo molestia",
+      "molestia",
+      "molestias",
+      "me molesta",
+      "me ha molestado",
+      "sigo con molestias",
+      "tengo dolor",
+      "dolor",
+      "me duele",
+      "me da problemas",
+      "me ha dado problemas",
+      "problemas"
+    ],
+    keywordGroups: [["molest"], ["dolor"], ["problem"]]
+  });
 }
 
 function matchesImplantObjection(message: string) {
-  return hasAny(message, [
-    "lo fui dejando por precio",
-    "por precio",
-    "me echo para atras el precio",
-    "me echó para atrás el precio",
-    "es caro",
-    "precio",
-    "dinero",
-    "miedo",
-    "lo fui dejando",
-    "dejando",
-    "tiempo",
-    "objecion",
-    "duda"
-  ]);
+  return matchesPhrasesOrKeywords(message, {
+    phrases: [
+      "lo fui dejando por precio",
+      "por precio",
+      "por el precio",
+      "ha sido por el precio",
+      "me echo para atras el precio",
+      "me echó para atrás el precio",
+      "es caro",
+      "precio",
+      "dinero",
+      "miedo",
+      "lo fui dejando",
+      "dejando",
+      "tiempo",
+      "objecion",
+      "duda"
+    ],
+    keywordGroups: [["preci"], ["car"], ["dej"], ["mied"], ["diner"]]
+  });
 }
 
 async function confirmSlot(
