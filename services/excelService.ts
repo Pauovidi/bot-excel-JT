@@ -7,6 +7,11 @@ import { normalizeDateValue, normalizeHeaderKey, normalizeNumberValue } from "@/
 import { normalizePhoneForStorage } from "@/lib/phone";
 import type { ActionType, DemoRecord, ImportSummary } from "@/types/demo";
 
+const SHEET_ACTION_OVERRIDES: Record<string, ActionType> = {
+  "limpieza dental": "cumpleanos",
+  implantologia: "promo"
+};
+
 function resolveMappedHeaders(headers: string[]) {
   const normalized = new Map(headers.map((header) => [normalizeHeaderKey(header), header]));
   const result: Record<string, string> = {};
@@ -24,10 +29,6 @@ function resolveMappedHeaders(headers: string[]) {
   return result;
 }
 
-function inferActionType(): ActionType {
-  return "revision";
-}
-
 function buildRecordId(values: string[]) {
   return createHash("sha1").update(values.join("|")).digest("hex").slice(0, 14);
 }
@@ -37,7 +38,8 @@ function normalizeCell(value: unknown) {
 }
 
 function inferActionTypeFromTreatment(tratamientoRealizado: string): ActionType {
-  return normalizeHeaderKey(tratamientoRealizado) === "presupuesto pendiente" ? "promo" : "revision";
+  const normalizedTreatment = normalizeHeaderKey(tratamientoRealizado);
+  return SHEET_ACTION_OVERRIDES[normalizedTreatment] ?? (normalizedTreatment === "presupuesto pendiente" ? "promo" : "revision");
 }
 
 export function parseExcelBuffer(buffer: Buffer, fileName = "demo.xlsx") {
